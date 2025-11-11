@@ -323,7 +323,7 @@ export default defineComponent({
     function rowClickTable(record) {
       go({
         path: `/rulechains/index/${record.label} - 规则链`,
-        query: {code: record.id, path: "//36.111.47.113:1880/#flow/"}
+        query: {code: record.id, path: "//localhost:1880/#flow/"}
       });
     }
 
