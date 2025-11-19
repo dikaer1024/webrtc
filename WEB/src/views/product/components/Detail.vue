@@ -16,16 +16,16 @@
   import { BasicDrawer, useDrawerInner } from '@/components/Drawer';
   import { Tabs, TabPane } from 'ant-design-vue';
   import { ref } from 'vue';
-  import PhsyicalModal from './PhsyicalModal.vue';
+  import PhysicalModal from './PhysicalModal.vue';
 
   const [register, { setDrawerProps, closeDrawer }] = useDrawerInner(() => {});
 
-  const activeKey = ref('PhsyicalModal');
+  const activeKey = ref('PhysicalModal');
   const tabPaneList = [
     {
       label: '物理模型管理',
-      key: 'PhsyicalModal',
-      componentName: PhsyicalModal,
+      key: 'PhysicalModal',
+      componentName: PhysicalModal,
     },
   ];
 </script>
