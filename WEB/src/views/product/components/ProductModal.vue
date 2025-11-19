@@ -280,5 +280,35 @@ function handleOk() {
         content: '';
       }
     }
+
+    :deep(.ant-form-item) {
+      margin-bottom: 20px;
+    }
+
+    :deep(.ant-input),
+    :deep(.ant-select-selector) {
+      border-radius: 8px;
+      transition: all 0.3s ease;
+
+      &:hover {
+        border-color: #40a9ff;
+      }
+
+      &:focus {
+        border-color: #1890ff;
+        box-shadow: 0 0 0 2px rgba(24, 144, 255, 0.2);
+      }
+    }
+
+    :deep(.ant-btn) {
+      border-radius: 8px;
+      font-weight: 500;
+      transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+
+      &:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 4px 8px rgba(0, 0, 0, 0.12);
+      }
+    }
   }
 </style>

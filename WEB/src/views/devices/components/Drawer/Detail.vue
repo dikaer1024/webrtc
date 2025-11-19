@@ -1,5 +1,7 @@
 <template>
-  <div><Description layout="vertical" :column="2" :data="description" :schema="schema" /> </div>
+  <div class="detail-container">
+    <Description layout="vertical" :column="2" :data="description" :schema="schema" />
+  </div>
 </template>
 <script lang="ts" setup>
 import {onMounted, reactive} from 'vue';
@@ -129,17 +131,58 @@ onMounted(() => {
 </script>
 
 <style lang="less" scoped>
+  .detail-container {
+    height: 100%;
+    padding-top: 24px;
+    display: flex;
+    flex-direction: column;
+  }
+
   :deep(.copy-warpper) {
     display: flex;
     align-items: center;
+    padding: 12px;
+    background: rgba(255, 255, 255, 0.6);
+    border-radius: 8px;
+    transition: all 0.3s ease;
+
+    &:hover {
+      background: rgba(255, 255, 255, 0.9);
+      transform: translateY(-1px);
+    }
 
     .copy {
       margin-left: 10px;
       opacity: 0;
+      transition: opacity 0.3s ease;
     }
   }
 
   :deep(.copy-warpper):hover .copy {
     opacity: 1;
+  }
+
+  :deep(.ant-descriptions) {
+    background: transparent;
+    flex: 1;
+  }
+
+  :deep(.ant-descriptions-item-label) {
+    font-weight: 600;
+    color: #666;
+    padding: 12px 16px;
+    background: rgba(0, 0, 0, 0.02);
+    border-radius: 6px;
+  }
+
+  :deep(.ant-descriptions-item-content) {
+    padding: 12px 16px;
+    color: #1a1a1a;
+    font-weight: 500;
+  }
+
+  :deep(.ant-descriptions-row) {
+    border-bottom: 1px solid #f0f0f0;
+    padding: 8px 0;
   }
 </style>

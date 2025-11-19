@@ -39,7 +39,7 @@
           <ProductDetail :detail="state.record"/>
         </TabPane>
         <TabPane key="3" tab="模型定义">
-          <PhsyicalModal
+          <PhysicalModal
             :product-identification="state.record.productIdentification"
             :device-profile-name="state.record.productName"
             :template-identification="state.record.templateIdentification"
@@ -53,7 +53,7 @@
 import {onMounted, reactive} from 'vue';
 import {TabPane, Tabs} from 'ant-design-vue';
 import ProductDetail from './ProductDetail.vue';
-import PhsyicalModal from './PhsyicalModal.vue';
+import PhysicalModal from './PhysicalModal.vue';
 import {productModel} from "@/views/product/Data";
 import {getDeviceProfileDetail} from "@/api/device/product";
 import {useRoute} from 'vue-router'
@@ -105,10 +105,13 @@ onMounted(() => {
 }
 
 .product-drawer-warpper {
-  overflow-y: hidden;
+  overflow-y: auto;
+  background: #f5f7fa;
+  padding: 24px;
+  height: 100%;
 
   .detail-info {
-    margin-bottom: 20px;
+    margin-bottom: 24px;
   }
 
   .ant-card {
@@ -121,78 +124,137 @@ onMounted(() => {
     list-style: none;
     font-feature-settings: tnum;
     position: relative;
-    background: #fff;
-    border-radius: 2px;
-    margin: 16px 16px 0;
+    background: linear-gradient(135deg, #ffffff 0%, #fafbfc 100%);
+    border-radius: 12px;
+    margin: 0;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+    border: 1px solid rgba(0, 0, 0, 0.06);
+    transition: all 0.3s ease;
+
+    &:hover {
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+    }
 
     .ant-card-body {
-      padding: 24px;
+      padding: 28px;
 
       .device_title {
-        height: 32px;
+        min-height: 32px;
         font-size: 16px;
         font-weight: 600;
-        color: #2e3033;
-        line-height: 19px;
-        margin-bottom: 10px;
+        color: #1a1a1a;
+        line-height: 1.5;
+        margin-bottom: 16px;
         display: flex;
+        align-items: center;
         justify-content: space-between;
+        padding-bottom: 12px;
+        border-bottom: 1px solid #f0f0f0;
+
+        span {
+          display: flex;
+          align-items: center;
+          gap: 12px;
+        }
 
         .ant-btn {
           line-height: 1.5715;
           position: relative;
           display: inline-block;
-          font-weight: 400;
+          font-weight: 500;
           white-space: nowrap;
           text-align: center;
           background-image: none;
           border: 1px solid transparent;
-          box-shadow: 0 2px #00000004;
+          box-shadow: 0 2px 4px rgba(0, 0, 0, 0.08);
           cursor: pointer;
-          transition: all .3s cubic-bezier(.645, .045, .355, 1);
+          transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
           -webkit-user-select: none;
           -moz-user-select: none;
           user-select: none;
           touch-action: manipulation;
-          height: 32px;
-          padding: 4px 15px;
+          height: 36px;
+          padding: 4px 20px;
           font-size: 14px;
-          border-radius: 2px;
+          border-radius: 8px;
           color: #000000d9;
           border-color: #d9d9d9;
           background: #fff;
+
+          &:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.12);
+          }
         }
 
         .ant-btn-primary {
           color: #fff;
+          background: #1890ff;
+          border-color: #1890ff;
+
+          &:hover {
+            background: #40a9ff;
+            border-color: #40a9ff;
+          }
         }
 
         .ant-btn-dangerous.ant-btn-primary {
           border-color: #ff4d4f;
           background: #ff4d4f;
-          text-shadow: 0 -1px 0 rgba(0, 0, 0, .12);
-          box-shadow: 0 2px #0000000b;
+          text-shadow: 0 -1px 0 rgba(0, 0, 0, 0.12);
+          box-shadow: 0 2px 4px rgba(255, 77, 79, 0.3);
+
+          &:hover {
+            background: #ff7875;
+            border-color: #ff7875;
+          }
         }
       }
 
       .base_data {
         display: flex;
         align-items: center;
-        font-size: 12px;
-        color: #a6a6a6;
-        line-height: 17px;
+        flex-wrap: nowrap;
+        gap: 0;
+        font-size: 13px;
+        color: #666;
+        line-height: 1.6;
+        overflow-x: auto;
+        padding-bottom: 4px;
 
         .item:first-child {
-          border-left: 0;
+          border-left: none;
+          padding-left: 0;
         }
 
         .item {
-          padding-left: 12px;
-          padding-right: 12px;
-          border-left: 1px solid #e0e0e0;
+          padding-left: 20px;
+          padding-right: 20px;
+          border-left: 1px solid #e8e8e8;
+          flex: 0 0 auto;
+          white-space: nowrap;
+
+          span:first-child {
+            color: #999;
+            font-weight: 400;
+            margin-right: 6px;
+            font-size: 13px;
+          }
+
+          span:last-child {
+            color: #1a1a1a;
+            font-weight: 500;
+            font-size: 13px;
+          }
 
           .red {
-            color: #fa3758;
+            color: #ff4d4f;
+            font-weight: 500;
+          }
+
+          .green {
+            color: #52c41a;
+            font-weight: 500;
           }
         }
       }
@@ -200,11 +262,52 @@ onMounted(() => {
   }
 
   .product-tabs {
+    margin: 0;
+    background: #ffffff;
+    border-radius: 12px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+    border: 1px solid rgba(0, 0, 0, 0.06);
+    overflow: hidden;
+
     .ant-tabs {
-      background-color: #FFFFFF;
-      padding: 20px;
-      padding-top: 10px;
-      margin: 16px 19px 0 15px;
+      background-color: #ffffff;
+      padding: 20px 24px;
+      padding-top: 16px;
+      margin: 0;
+    }
+
+    :deep(.ant-tabs-nav) {
+      margin-bottom: 24px;
+      padding: 0;
+    }
+
+    :deep(.ant-tabs-content-holder) {
+      padding: 0 24px 24px;
+    }
+
+    :deep(.ant-tabs-tab) {
+      padding: 12px 24px;
+      font-size: 15px;
+      font-weight: 500;
+      color: #666;
+      transition: all 0.3s ease;
+      margin-right: 8px;
+
+      &:hover {
+        color: #1890ff;
+      }
+    }
+
+    :deep(.ant-tabs-tab-active) {
+      .ant-tabs-tab-btn {
+        color: #1890ff;
+        font-weight: 600;
+      }
+    }
+
+    :deep(.ant-tabs-ink-bar) {
+      height: 3px;
+      border-radius: 2px;
     }
   }
 }
