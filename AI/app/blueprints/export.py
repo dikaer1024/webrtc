@@ -6,15 +6,15 @@
 import logging
 import os
 import tempfile
-import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
+from urllib.parse import urlparse, parse_qs
 from flask import Blueprint, jsonify, current_app, url_for, send_file, request
 from ultralytics import YOLO
 
 from app.services.minio_service import ModelService
-from models import db, Model, ExportRecord, TrainTask
+from db_models import db, Model, ExportRecord, TrainTask
 
 export_bp = Blueprint('export', __name__)
 logger = logging.getLogger(__name__)
@@ -32,14 +32,36 @@ EXPORT_STATUS = {
 
 SUPPORTED_FORMATS = {
     'onnx': {'ext': '.onnx', 'mime': 'application/octet-stream'},
-    'torchscript': {'ext': '.torchscript', 'mime': 'application/octet-stream'},
-    'tensorrt': {'ext': '.engine', 'mime': 'application/octet-stream'},
-    'openvino': {'ext': '_openvino_model/', 'mime': 'application/octet-stream'},
-    'rknn': {'ext': '.rknn', 'mime': 'application/octet-stream'}  # 新增RKNN格式
+    'openvino': {'ext': '_openvino_model/', 'mime': 'application/octet-stream'}
 }
 
 # 导出任务队列
 export_tasks = {}
+
+
+def parse_minio_url(url: str):
+    """
+    解析MinIO下载URL，提取bucket和object_key
+    格式: /api/v1/buckets/{bucket_name}/objects/download?prefix={object_key}
+    """
+    try:
+        parsed = urlparse(url)
+        path_parts = parsed.path.split('/')
+        
+        # 提取bucket名称
+        if len(path_parts) >= 5 and path_parts[3] == 'buckets':
+            bucket_name = path_parts[4]
+        else:
+            return None, None
+        
+        # 提取object_key
+        query_params = parse_qs(parsed.query)
+        object_key = query_params.get('prefix', [None])[0]
+        
+        return bucket_name, object_key
+    except Exception as e:
+        logger.error(f"解析MinIO URL失败: {url}, 错误: {str(e)}")
+        return None, None
 
 @export_bp.route('/<int:model_id>/export/<format>', methods=['POST'])
 def api_export_model(model_id, format):
@@ -57,11 +79,8 @@ def api_export_model(model_id, format):
 
         # 获取请求参数
         req_data = request.get_json() or {}
-        rknn_config = {
-            'target_platform': req_data.get('target_platform', 'rk3588'),
-            'quantization': req_data.get('quantization', True),
+        export_config = {
             'img_size': req_data.get('img_size', 640),
-            'dataset': req_data.get('dataset'),
             'opset': req_data.get('opset', 12)
         }
 
@@ -88,7 +107,7 @@ def api_export_model(model_id, format):
             process_export_async,
             model_id,
             format,
-            rknn_config,
+            export_config,
             export_record.id,
             task_id
         )
@@ -109,7 +128,7 @@ def api_export_model(model_id, format):
         }), 500
 
 
-def process_export_async(model_id, format, rknn_config, export_id, task_id):
+def process_export_async(model_id, format, export_config, export_id, task_id):
     """异步处理导出任务"""
     try:
         # 更新任务状态为处理中
@@ -135,16 +154,26 @@ def process_export_async(model_id, format, rknn_config, export_id, task_id):
             export_record.status = 'PROCESSING'
             db.session.commit()
 
+            # 解析MinIO URL获取bucket和object名称
+            if minio_model_path.startswith('/api/v1/buckets/'):
+                bucket_name, object_name = parse_minio_url(minio_model_path)
+                if not bucket_name or not object_name:
+                    raise Exception(f"无法解析MinIO URL: {minio_model_path}")
+            else:
+                # 兼容旧格式：直接使用路径（假设bucket为models）
+                bucket_name = "models"
+                object_name = minio_model_path
+
             if not ModelService.download_from_minio(
-                    bucket_name="model-train",
-                    object_name=minio_model_path,
+                    bucket_name=bucket_name,
+                    object_name=object_name,
                     destination_path=local_pt_path
             ):
-                raise Exception("原始模型下载失败")
+                raise Exception(f"原始模型下载失败: {bucket_name}/{object_name}")
 
             export_tasks[task_id]['progress'] = 40
 
-            # 其他格式处理
+            # 执行模型导出
             model = YOLO(local_pt_path)
             export_filename = f"model{SUPPORTED_FORMATS[format]['ext']}"
             export_local_path = os.path.join(tmp_dir, export_filename)
@@ -152,23 +181,30 @@ def process_export_async(model_id, format, rknn_config, export_id, task_id):
             # 执行模型导出
             export_params = {
                 'format': format,
-                'imgsz': rknn_config['img_size'],
-                'optimize': True if format == 'tensorrt' else False,
+                'imgsz': export_config['img_size'],
                 'device': 'cpu'
             }
 
             if format == 'openvino':
                 export_params['half'] = False
+            elif format == 'onnx':
+                export_params['opset'] = export_config.get('opset', 12)
 
             model.export(**export_params)
 
             # 处理导出文件
-            exported_files = [f for f in os.listdir(tmp_dir) if
-                              f.endswith(SUPPORTED_FORMATS[format]['ext']) or f.endswith('.engine')]
+            if format == 'openvino':
+                # OpenVINO导出为目录
+                exported_files = [f for f in os.listdir(tmp_dir) if f.endswith('_openvino_model')]
+            else:
+                # ONNX导出为单个文件
+                exported_files = [f for f in os.listdir(tmp_dir) if f.endswith('.onnx')]
+            
             if not exported_files:
                 raise Exception("模型导出失败，未生成目标文件")
 
-            if format != 'openvino':
+            if format == 'onnx':
+                # ONNX格式：重命名文件
                 os.rename(os.path.join(tmp_dir, exported_files[0]), export_local_path)
 
             # 上传到Minio
@@ -206,10 +242,6 @@ def process_export_async(model_id, format, rknn_config, export_id, task_id):
             # 更新模型表的对应字段
             if format == 'onnx':
                 model_record.onnx_model_path = minio_export_path
-            elif format == 'torchscript':
-                model_record.torchscript_model_path = minio_export_path
-            elif format == 'tensorrt':
-                model_record.tensorrt_model_path = minio_export_path
             elif format == 'openvino':
                 model_record.openvino_model_path = minio_export_path
 

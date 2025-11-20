@@ -166,3 +166,4 @@ class SpeechRecord(db.Model):
 
     def __repr__(self):
         return f'<SpeechRecord {self.filename} ({self.status})>'
+

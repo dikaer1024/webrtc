@@ -1,9 +1,9 @@
 <template>
-  <div class="model-card-list-wrapper p-2">
+  <div class="model-card-list-wrapper">
     <div class="p-4 bg-white" style="margin-bottom: 10px">
       <BasicForm @register="registerForm" @reset="handleSubmit"/>
     </div>
-    <div class="p-2 bg-white">
+    <div class="bg-white">
       <Spin :spinning="state.loading">
         <List
           :grid="{ gutter: 2, xs: 1, sm: 2, md: 4, lg: 4, xl: 6, xxl: 6 }"
@@ -20,10 +20,9 @@
             </div>
           </template>
           <template #renderItem="{ item }">
-            <ListItem
-              style="padding: 0; background: #FFFFFF; box-shadow: 0px 0px 4px 0px rgba(24, 24, 24, 0.1); height: 100%; transition: all 0.3s;">
+            <ListItem class="model-list-item">
               <div class="model-card-box">
-                <div class="model-card-cont" style="padding: 15px">
+                <div class="model-card-cont">
                   <!-- 正方形图片容器 -->
                   <div class="model-image-container" @click="handleView(item)">
                     <img
@@ -38,7 +37,7 @@
                   </h6>
 
                   <!-- 标签区域 -->
-                  <div style="display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0;">
+                  <div class="model-tags">
                     <Tag color="#1890ff">ID: {{ item.id }}</Tag>
                     <Tag color="#52c41a">版本: {{ item.version || '未指定' }}</Tag>
                     <Tag color="#8c8c8c">{{ formatDate(item.created_at) }}</Tag>
@@ -58,6 +57,9 @@
                       </div>
                       <div class="btn" @click="handleDeploy(item)" title="部署模型">
                         <ExperimentOutlined style="font-size: 16px;"/>
+                      </div>
+                      <div class="btn" @click="handleDownload(item)" title="下载模型">
+                        <DownloadOutlined style="font-size: 16px;"/>
                       </div>
                       <Popconfirm
                         title="是否确认删除？"
@@ -85,7 +87,7 @@ import {List, Popconfirm, Spin, Tag} from 'ant-design-vue';
 import {BasicForm, useForm} from '@/components/Form';
 import {propTypes} from '@/utils/propTypes';
 import {isFunction} from '@/utils/is';
-import {DeleteOutlined, EditOutlined, ExperimentOutlined, EyeOutlined} from '@ant-design/icons-vue';
+import {DeleteOutlined, DownloadOutlined, EditOutlined, ExperimentOutlined, EyeOutlined} from '@ant-design/icons-vue';
 
 defineOptions({name: 'ModelCardList'})
 
@@ -96,7 +98,7 @@ const props = defineProps({
   api: propTypes.func,
 });
 
-const emit = defineEmits(['getMethod', 'delete', 'edit', 'view', 'deploy', 'train']);
+const emit = defineEmits(['getMethod', 'delete', 'edit', 'view', 'deploy', 'train', 'download']);
 
 const data = ref([]);
 const state = reactive({
@@ -221,6 +223,10 @@ function handleEdit(record: object) {
 function handleDeploy(record: object) {
   emit('deploy', record);
 }
+
+function handleDownload(record: object) {
+  emit('download', record);
+}
 </script>
 
 <style lang="less" scoped>
@@ -228,15 +234,43 @@ function handleDeploy(record: object) {
   :deep(.ant-list-header) {
     border: 0;
   }
+
+  :deep(.ant-list) {
+    padding: 6px;
+  }
+
+  :deep(.ant-list-item) {
+    margin: 6px;
+    padding: 0 !important;
+  }
+}
+
+// 列表项样式
+.model-list-item {
+  padding: 0 !important;
+  height: 100%;
+  display: flex;
 }
 
 .model-card-box {
   background: #FFFFFF;
   box-shadow: 0px 0px 4px 0px rgba(24, 24, 24, 0.1);
   height: 100%;
+  width: 100%;
   transition: all 0.3s;
   border-radius: 8px;
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  min-height: 400px;
+}
+
+.model-card-cont {
+  padding: 15px;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  flex: 1;
 }
 
 .model-card-title {
@@ -245,6 +279,28 @@ function handleDeploy(record: object) {
   line-height: 1.36em;
   color: #181818;
   margin-bottom: 12px;
+  flex-shrink: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+
+  a {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+.model-tags {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 6px;
+  margin-bottom: 12px;
+  flex-shrink: 0;
+  overflow: hidden;
+  height: 24px;
+  align-items: center;
 }
 
 .model-description {
@@ -256,6 +312,8 @@ function handleDeploy(record: object) {
   -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
   overflow: hidden;
+  flex: 1;
+  min-height: 63px; // 确保至少3行的高度
 }
 
 /* 优化后的按钮区域 */
@@ -264,6 +322,8 @@ function handleDeploy(record: object) {
   justify-content: space-between;
   align-items: center;
   padding-top: 15px;
+  flex-shrink: 0;
+  margin-top: auto;
 }
 
 .btn-group {
@@ -303,6 +363,7 @@ function handleDeploy(record: object) {
   border-radius: 4px;
   background-color: #f5f5f5;
   cursor: pointer;
+  flex-shrink: 0;
 }
 
 .model-image {
@@ -321,5 +382,10 @@ function handleDeploy(record: object) {
   padding: 0 8px;
   height: 24px;
   line-height: 22px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex-shrink: 1;
+  max-width: 100%;
 }
 </style>

@@ -126,7 +126,7 @@ export const getInferenceRecords = (params) => {
 };
 
 export const getInferenceTaskDetail = (recordId) => {
-  return commonApi('get', `${Api.InferenceTask}/${recordId}`);
+  return commonApi('get', `${Api.InferenceTask}/detail/${recordId}`);
 };
 
 export const deleteInferenceRecord = (recordId) => {
@@ -134,7 +134,16 @@ export const deleteInferenceRecord = (recordId) => {
 };
 
 export const runInference = (modelId, formData) => {
-  return commonApi('post',`${Api.InferenceTask}/${modelId}/inference/run`,{data: formData},{'Content-Type': 'multipart/form-data'});
+  return defHttp.post({
+    url: `${Api.InferenceTask}/${modelId}/inference/run`,
+    data: formData,
+    headers: {
+      'Content-Type': 'multipart/form-data',
+      'X-Authorization': 'Bearer ' + localStorage.getItem('jwt_token')
+    }
+  }, {
+    isTransformResponse: false
+  });
 };
 
 export const streamInferenceProgress = (recordId: number) => {
@@ -143,11 +152,21 @@ export const streamInferenceProgress = (recordId: number) => {
 
 // ================= 导出接口优化 =================
 export const exportModel = (modelId, format, params) => {
-  return commonApi('post', `${Api.Export}/model/${modelId}/export/${format}`, {data: params});
+  // 后端路径: /model/export/<model_id>/export/<format>
+  return commonApi('post', `${Api.Export}/${modelId}/export/${format}`, {data: params});
 };
 
 export const downloadExportedModel = (exportId) => {
-  return commonApi('get', `${Api.Export}/download/${exportId}`);
+  // 下载文件需要返回blob，不使用transformResponse
+  return defHttp.get({
+    url: `${Api.Export}/download/${exportId}`,
+    responseType: 'blob',
+    headers: {
+      'X-Authorization': 'Bearer ' + localStorage.getItem('jwt_token')
+    }
+  }, {
+    isTransformResponse: false
+  });
 };
 
 export const deleteExportedModel = (exportId) => {
@@ -158,7 +177,34 @@ export const getExportModelList = (params) => {
   return commonApi('get', `${Api.Export}/list`, {params});
 };
 
-export const getExportStatus = (exportId) => {
-  return commonApi('get', `${Api.Export}/status/${exportId}`);
+export const getExportStatus = (taskIdOrExportId: string | number) => {
+  return commonApi('get', `${Api.Export}/status/${taskIdOrExportId}`);
+};
+
+export const uploadInputFile = (formData: FormData) => {
+  return defHttp.post({
+    url: `${Api.InferenceTask}/upload_input`,
+    data: formData,
+    headers: {
+      'Content-Type': 'multipart/form-data',
+      'X-Authorization': 'Bearer ' + localStorage.getItem('jwt_token')
+    }
+  });
+};
+
+// 下载模型文件
+export const downloadModel = (modelId, modelPath) => {
+  // 如果 modelPath 是完整的 URL，直接使用
+  if (modelPath && (modelPath.startsWith('http://') || modelPath.startsWith('https://'))) {
+    return modelPath;
+  }
+  // 如果是相对路径，构建完整的下载 URL
+  if (modelPath && modelPath.startsWith('/')) {
+    // 获取基础 URL
+    const baseUrl = window.location.origin;
+    return `${baseUrl}${modelPath}`;
+  }
+  // 如果没有路径，使用模型 ID 下载接口
+  return `${Api.Model}/${modelId}/download`;
 };
 

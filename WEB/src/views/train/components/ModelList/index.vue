@@ -37,6 +37,14 @@
               },
               {
                 tooltip: {
+                  title: '下载模型',
+                  placement: 'top',
+                },
+                icon: 'ant-design:download-outlined',
+                onClick: handleDownload.bind(null, record),
+              },
+              {
+                tooltip: {
                   title: '删除',
                   placement: 'top',
                 },
@@ -62,6 +70,7 @@
         @edit="handleEdit"
         @deploy="handleDeploy"
         @train="handleTrain"
+        @download="handleDownload"
       >
       <template #header>
         <a-button type="primary" @click="openAddModal(true, { isEdit: false, isView: false })">
@@ -85,7 +94,7 @@ import { getBasicColumns, getFormConfig } from "./data";
 import ModelModal from "../ModelModal/index.vue";
 import { useModal } from "@/components/Modal";
 import { useRouter } from "vue-router";
-import { deleteModel, getModelPage } from "@/api/device/model";
+import { deleteModel, getModelPage, downloadModel } from "@/api/device/model";
 import ModelCardList from "../ModelCardList/index.vue";
 
 const [registerAddModel, { openModal: openAddModal }] = useModal();
@@ -177,6 +186,100 @@ const handleDelete = async (record) => {
   } catch (error) {
     console.error(error);
     createMessage.error('删除失败');
+  }
+};
+
+// 下载模型处理函数
+const handleDownload = async (record) => {
+  try {
+    const token = localStorage.getItem('jwt_token');
+    
+    // 优先使用后台返回的 model_path 或 onnx_model_path（MinIO 路径）
+    const modelPath = record.model_path || record.onnx_model_path;
+    
+    let downloadUrl;
+    if (modelPath) {
+      // 如果 model_path 是完整的 MinIO 路径（以 /api/v1/buckets 开头），直接使用
+      // nginx 会自动代理到 MinIO
+      if (modelPath.startsWith('/api/v1/buckets')) {
+        downloadUrl = modelPath;
+      } else if (modelPath.startsWith('http://') || modelPath.startsWith('https://')) {
+        // 如果是完整的 HTTP URL，直接使用
+        downloadUrl = modelPath;
+      } else {
+        // 如果是相对路径，可能需要添加前缀（根据实际情况调整）
+        downloadUrl = modelPath;
+      }
+    } else {
+      // 如果没有 model_path，使用后端下载接口作为备选方案
+      downloadUrl = `/api/model/${record.id}/download`;
+    }
+
+    // 使用 fetch 下载文件（支持认证头）
+    const response = await fetch(downloadUrl, {
+      method: 'GET',
+      headers: {
+        'X-Authorization': 'Bearer ' + token,
+      },
+    });
+
+    if (!response.ok) {
+      // 如果是404，尝试解析错误消息
+      if (response.status === 404) {
+        const errorData = await response.json().catch(() => ({}));
+        createMessage.warning(errorData.msg || '该模型没有可下载的文件');
+        return;
+      }
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(errorData.msg || '下载失败: ' + response.statusText);
+    }
+
+    // 获取文件 blob
+    const blob = await response.blob();
+    
+    // 从响应头获取文件名，如果没有则根据模型路径确定
+    const contentDisposition = response.headers.get('Content-Disposition');
+    let fileName = `${record.name}_${record.version || 'v1.0.0'}.pt`;
+    
+    if (contentDisposition) {
+      const fileNameMatch = contentDisposition.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
+      if (fileNameMatch && fileNameMatch[1]) {
+        fileName = fileNameMatch[1].replace(/['"]/g, '');
+      }
+    } else if (modelPath) {
+      // 从 MinIO 路径中提取文件名
+      try {
+        const urlObj = new URL(modelPath, window.location.origin);
+        const prefix = urlObj.searchParams.get('prefix');
+        if (prefix) {
+          const pathParts = prefix.split('/');
+          fileName = pathParts[pathParts.length - 1] || fileName;
+        }
+      } catch (e) {
+        // 如果解析失败，根据模型类型确定扩展名
+        const fileExt = record.onnx_model_path && !record.model_path ? '.onnx' : '.pt';
+        fileName = `${record.name}_${record.version || 'v1.0.0'}${fileExt}`;
+      }
+    } else {
+      // 根据模型路径确定文件扩展名
+      const fileExt = record.onnx_model_path && !record.model_path ? '.onnx' : '.pt';
+      fileName = `${record.name}_${record.version || 'v1.0.0'}${fileExt}`;
+    }
+    
+    // 创建下载链接
+    const url = window.URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = fileName;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    window.URL.revokeObjectURL(url);
+    
+    createMessage.success('模型下载成功');
+  } catch (error) {
+    console.error('下载模型失败:', error);
+    createMessage.error('下载模型失败: ' + (error.message || '未知错误'));
   }
 };
 </script>

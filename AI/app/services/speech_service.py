@@ -20,7 +20,7 @@ from urllib3.util.retry import Retry
 
 from app.config.xunfei_config import get_xunfei_config, validate_language
 from app.services.minio_service import ModelService
-from models import SpeechRecord, db
+from db_models import SpeechRecord, db
 
 logger = logging.getLogger(__name__)
 
