@@ -16,7 +16,7 @@ import numpy as np
 from paddleocr import PaddleOCR
 
 from app.services.minio_service import ModelService
-from models import OCRResult, db
+from db_models import OCRResult, db
 
 logger = logging.getLogger(__name__)
 

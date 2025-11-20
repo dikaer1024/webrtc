@@ -5,6 +5,7 @@
 """
 import argparse
 import atexit
+import multiprocessing
 import os
 import socket
 import sys
@@ -20,6 +21,30 @@ from nacos import NacosClient
 from sqlalchemy import text
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
+# 设置multiprocessing启动方法为'spawn'以支持CUDA
+# 这必须在导入使用multiprocessing的模块之前设置
+# 注意：set_start_method只能在主进程中调用一次
+try:
+    # 检查当前启动方法
+    try:
+        current_method = multiprocessing.get_start_method()
+    except RuntimeError:
+        # 如果还没有设置，尝试设置
+        current_method = None
+    
+    if current_method != 'spawn':
+        multiprocessing.set_start_method('spawn', force=True)
+        print(f"✅ 已设置multiprocessing启动方法为'spawn'（原方法: {current_method or '未设置'}）")
+    else:
+        print(f"✅ multiprocessing启动方法已为'spawn'")
+except RuntimeError as e:
+    # 如果已经设置过或无法设置，记录但不中断程序
+    try:
+        current_method = multiprocessing.get_start_method()
+        print(f"⚠️  无法设置multiprocessing启动方法: {str(e)}，当前方法: {current_method}")
+    except RuntimeError:
+        print(f"⚠️  无法设置multiprocessing启动方法: {str(e)}")
 
 # 解析命令行参数
 def parse_args():
@@ -66,6 +91,11 @@ def load_env_file(env_name=''):
 # 解析命令行参数并加载配置文件
 args = parse_args()
 load_env_file(args.env)
+
+# 强制 ONNX Runtime 使用 CPU（在导入任何使用 ONNX Runtime 的模块之前设置）
+# 这样可以避免 CUDA 相关的错误，特别是在 CUDA 库不完整的情况下
+os.environ['ORT_EXECUTION_PROVIDERS'] = 'CPUExecutionProvider'
+print("✅ 已设置 ONNX Runtime 使用 CPU 执行提供者")
 
 
 def get_local_ip():
@@ -129,7 +159,7 @@ def create_app():
     os.makedirs('data/inference_results', exist_ok=True)
 
     # 初始化数据库
-    from models import db
+    from db_models import db
     db.init_app(app)
     with app.app_context():
         database_uri = app.config['SQLALCHEMY_DATABASE_URI']
@@ -144,7 +174,7 @@ def create_app():
                         user = user_pass.split(':')[0]
                         safe_uri = database_uri.replace(user_pass, f"{user}:***")
             print(f"数据库连接: {safe_uri}")
-            from models import Model, TrainTask, ExportRecord, InferenceTask, LLMConfig, OCRResult
+            from db_models import Model, TrainTask, ExportRecord, InferenceTask, LLMConfig, OCRResult
             db.create_all()
             print(f"✅ 数据库连接成功，表结构已创建/验证")
         except Exception as e:
@@ -183,7 +213,7 @@ def create_app():
 
         # 添加数据库检查 - 使用text()包装SQL语句
         def database_available():
-            from models import db
+            from db_models import db
             try:
                 db.session.execute(text('SELECT 1'))
                 return True, "Database OK"

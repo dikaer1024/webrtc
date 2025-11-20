@@ -16,7 +16,7 @@ from flask import current_app, jsonify, Blueprint, request
 from ultralytics import YOLO
 
 from app.services.minio_service import ModelService
-from models import db, Model, TrainTask
+from db_models import db, Model, TrainTask
 
 train_bp = Blueprint('train', __name__)
 
@@ -492,11 +492,6 @@ def train_model(model_id, epochs=20, model_arch='yolov8n.pt',
 
                 update_log_local(f"模型文件已成功复制到保存目录: {model_save_dir}")
 
-                # 更新项目信息
-                model.model_path = local_model_path
-                model.last_trained = datetime.now()
-                db.session.commit()
-
                 # ================= Minio上传功能 =================
                 update_log_local("开始上传最佳模型到Minio...", progress=95)
 
@@ -513,8 +508,17 @@ def train_model(model_id, epochs=20, model_arch='yolov8n.pt',
                     accessible_model_url = f"/api/v1/buckets/models/objects/download?prefix={minio_model_path}"
                     update_log_local(f"模型已成功上传至Minio: {accessible_model_url}")
                     train_task.minio_model_path = accessible_model_url  # 保存URL而不是路径
+                    
+                    # 更新项目信息，保存MinIO下载URL到model_path字段
+                    model.model_path = accessible_model_url
+                    model.last_trained = datetime.now()
+                    db.session.commit()
                 else:
                     update_log_local("模型上传Minio失败，请检查日志")
+                    # 即使上传失败，也更新训练时间，但保留本地路径
+                    model.model_path = local_model_path
+                    model.last_trained = datetime.now()
+                    db.session.commit()
 
                 # 上传训练日志，参照results.png的写法
                 log_content = train_task.train_log
