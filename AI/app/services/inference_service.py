@@ -22,15 +22,9 @@ import torch
 from flask import current_app
 from ultralytics import YOLO
 
-try:
-    import onnxruntime as ort
-    import onnx
-except ImportError:
-    ort = None
-    onnx = None
-
 from app.services.minio_service import ModelService
 from db_models import Model, InferenceTask, db
+from app.utils.onnx_inference import ONNXInference
 
 
 class InferenceService:
@@ -41,6 +35,7 @@ class InferenceService:
         self.inference_results_bucket = "inference-results"  # 推理结果专用bucket
         self.device = self._select_device()
         self.model_cache = {}  # 模型实例缓存
+        self.onnx_cache = {}  # ONNX模型实例缓存
         self.media_server = self._get_media_server_url()
         self.specified_model_path = None  # 外部指定的模型文件路径
 
@@ -71,170 +66,31 @@ class InferenceService:
         return 'cpu'
 
 
-    def _load_model(self, model_path: str) -> YOLO:
+    def _load_model(self, model_path: str):
         """优化模型加载，支持混合精度和缓存，支持ONNX模型"""
-        if model_path in self.model_cache:
-            return self.model_cache[model_path]
-
-        try:
-            # 检查是否为ONNX模型
-            is_onnx = model_path.lower().endswith('.onnx')
+        # 检查是否为ONNX模型
+        is_onnx = model_path.lower().endswith('.onnx')
+        
+        if is_onnx:
+            # ONNX模型使用新的ONNX推理模块
+            if model_path in self.onnx_cache:
+                return self.onnx_cache[model_path]
             
-            # 加载模型，ONNX模型需要明确指定task='detect'以避免警告
-            if is_onnx:
-                # ONNX模型强制使用CPU推理
-                # 在加载模型之前，彻底禁用CUDA执行提供者
-                import onnxruntime as ort
-                import numpy as np
-                
-                # 方法1: 设置环境变量（在导入onnxruntime之前应该已经设置，这里再次确认）
-                os.environ['ORT_EXECUTION_PROVIDERS'] = 'CPUExecutionProvider'
-                
-                # 方法2: 临时禁用CUDA提供者（如果可用）
-                # 获取所有可用的执行提供者
-                available_providers = ort.get_available_providers()
-                logging.info(f"ONNX Runtime可用执行提供者: {available_providers}")
-                
-                # 如果CUDA可用，记录警告但不使用
-                if 'CUDAExecutionProvider' in available_providers:
-                    logging.warning("检测到CUDA执行提供者，但由于CUDA库不完整，将强制使用CPU")
-                
-                # 方法3: 创建CPU session并替换ultralytics内部的session
-                try:
-                    # 创建 CPU session（明确指定只使用 CPU，禁用 CUDA）
-                    sess_options = ort.SessionOptions()
-                    # 禁用所有 GPU 提供者，只使用 CPU
-                    cpu_session = ort.InferenceSession(
-                        model_path,
-                        sess_options=sess_options,
-                        providers=['CPUExecutionProvider']  # 明确指定只使用 CPU
-                    )
-                    
-                    # 验证 session 使用 CPU
-                    providers = cpu_session.get_providers()
-                    if providers:
-                        actual_provider = providers[0]
-                        logging.info(f"创建的ONNX session执行提供者: {actual_provider}")
-                        if 'CPU' not in actual_provider:
-                            raise RuntimeError(f"无法创建CPU session，当前提供者: {actual_provider}")
-                    
-                    # 使用 ultralytics 加载模型（此时ultralytics可能会尝试使用CUDA，但我们已经创建了CPU session）
-                    # 在加载之前，临时设置环境变量确保ultralytics也使用CPU
-                    old_ort_env = os.environ.get('ORT_EXECUTION_PROVIDERS', None)
-                    os.environ['ORT_EXECUTION_PROVIDERS'] = 'CPUExecutionProvider'
-                    
-                    try:
-                        model = YOLO(model_path, task='detect')
-                    finally:
-                        # 恢复环境变量（如果有的话）
-                        if old_ort_env:
-                            os.environ['ORT_EXECUTION_PROVIDERS'] = old_ort_env
-                        else:
-                            os.environ['ORT_EXECUTION_PROVIDERS'] = 'CPUExecutionProvider'
-                    
-                    # 强制替换 ultralytics 内部的 session 为 CPU session
-                    session_replaced = False
-                    
-                    # 尝试多种方式访问和替换session
-                    # 方式1: model.model.session (最常见)
-                    if hasattr(model, 'model'):
-                        if hasattr(model.model, 'session'):
-                            model.model.session = cpu_session
-                            session_replaced = True
-                            logging.info("✅ 已替换ONNX session为CPU版本 (model.model.session)")
-                        # 方式2: model.model._session (某些版本可能使用私有属性)
-                        elif hasattr(model.model, '_session'):
-                            model.model._session = cpu_session
-                            session_replaced = True
-                            logging.info("✅ 已替换ONNX session为CPU版本 (model.model._session)")
-                        # 方式3: 检查是否有predictor属性
-                        elif hasattr(model, 'predictor') and hasattr(model.predictor, 'model'):
-                            predictor_model = model.predictor.model
-                            if hasattr(predictor_model, 'session'):
-                                predictor_model.session = cpu_session
-                                session_replaced = True
-                                logging.info("✅ 已替换ONNX session为CPU版本 (predictor.model.session)")
-                            elif hasattr(predictor_model, '_session'):
-                                predictor_model._session = cpu_session
-                                session_replaced = True
-                                logging.info("✅ 已替换ONNX session为CPU版本 (predictor.model._session)")
-                    
-                    if not session_replaced:
-                        logging.warning("⚠️ 无法找到session属性进行替换，将尝试其他方法")
-                        # 尝试通过autobackend访问
-                        if hasattr(model, 'model'):
-                            # 打印模型结构以便调试
-                            logging.debug(f"模型结构: {type(model.model)}, 属性: {dir(model.model)}")
-                            
-                            # 尝试直接修改执行提供者（如果可能）
-                            if hasattr(model.model, 'providers'):
-                                try:
-                                    model.model.providers = ['CPUExecutionProvider']
-                                    logging.info("✅ 已设置执行提供者为CPU")
-                                except:
-                                    pass
-                    
-                    # 清除可能存在的 IO binding 缓存（如果有）
-                    if hasattr(model, 'model') and hasattr(model.model, 'io'):
-                        try:
-                            # 删除旧的 IO binding，让 ultralytics 在下次使用时创建新的
-                            delattr(model.model, 'io')
-                            logging.info("✅ 已清除旧的IO binding，将在下次推理时重新创建")
-                        except:
-                            pass
-                    
-                    # 清除可能存在的其他缓存属性
-                    # ultralytics 的 autobackend 可能缓存了设备信息
-                    if hasattr(model, 'model'):
-                        for attr_name in ['device', '_device', 'output_names', 'input_names', '_output_names', '_input_names']:
-                            if hasattr(model.model, attr_name):
-                                try:
-                                    delattr(model.model, attr_name)
-                                except:
-                                    pass
-                    
-                    # 验证替换后的 session（如果成功替换）
-                    if session_replaced and hasattr(model, 'model') and hasattr(model.model, 'session'):
-                        final_session = model.model.session
-                        if hasattr(final_session, 'get_providers'):
-                            final_providers = final_session.get_providers()
-                            if final_providers:
-                                final_provider = final_providers[0]
-                                logging.info(f"✅ 验证：最终ONNX模型执行提供者: {final_provider}")
-                                if 'CPU' not in final_provider:
-                                    logging.error(f"❌ 警告：最终session仍不是CPU，当前: {final_provider}")
-                                else:
-                                    logging.info("✅ ONNX模型已成功配置为使用CPU推理")
-                    
-                    # 预热CPU模型（使用小尺寸图像避免内存问题）
-                    # 注意：预热可能会触发 IO binding 的创建，此时应该使用新的 CPU session
-                    try:
-                        test_img = np.zeros((640, 640, 3), dtype=np.uint8)
-                        _ = model(test_img, verbose=False)
-                        logging.debug("ONNX模型CPU推理预热成功")
-                    except Exception as e:
-                        error_msg = str(e)
-                        if 'data transfer' in error_msg.lower() or 'device' in error_msg.lower():
-                            logging.warning(f"CPU模型预热时出现设备转换错误: {error_msg}")
-                            logging.warning("这可能是由于ultralytics内部仍在使用旧的session，将在首次推理时自动处理")
-                            # 如果预热失败，尝试清除更多缓存
-                            if hasattr(model, 'model'):
-                                for attr_name in ['io', '_io', 'warmup', '_warmup']:
-                                    if hasattr(model.model, attr_name):
-                                        try:
-                                            delattr(model.model, attr_name)
-                                        except:
-                                            pass
-                        else:
-                            logging.warning(f"CPU模型预热时出现错误: {error_msg}，将在首次推理时自动处理")
-                except Exception as e:
-                    logging.error(f"加载ONNX模型失败: {str(e)}")
-                    raise
-            else:
+            try:
+                onnx_model = ONNXInference(model_path)
+                self.onnx_cache[model_path] = onnx_model
+                logging.info(f"ONNX模型加载成功: {model_path}")
+                return onnx_model
+            except Exception as e:
+                logging.error(f"ONNX模型加载失败: {str(e)}")
+                raise
+        else:
+            # PyTorch模型使用YOLO
+            if model_path in self.model_cache:
+                return self.model_cache[model_path]
+            
+            try:
                 model = YOLO(model_path)
-            
-            # ONNX模型不需要设置设备和半精度（ONNX Runtime会自动处理）
-            if not is_onnx:
                 model.to(self.device)
                 # 启用半精度推理（GPU环境，仅对PyTorch模型）
                 if 'cuda' in self.device:
@@ -242,16 +98,13 @@ class InferenceService:
                         model.model.half()  # FP16推理
                     except Exception as e:
                         logging.warning(f"无法启用半精度推理: {str(e)}，使用全精度")
-            else:
-                logging.info(f"加载ONNX模型: {model_path}，使用ONNX Runtime进行推理")
-
-            self.model_cache[model_path] = model
-            logging.info(f"模型加载成功: {model_path}, 设备: {self.device}, 格式: {'ONNX' if is_onnx else 'PyTorch'}")
-            return model
-
-        except Exception as e:
-            logging.error(f"模型加载失败: {str(e)}")
-            raise
+                
+                self.model_cache[model_path] = model
+                logging.info(f"PyTorch模型加载成功: {model_path}, 设备: {self.device}")
+                return model
+            except Exception as e:
+                logging.error(f"模型加载失败: {str(e)}")
+                raise
 
     def get_model(self) -> YOLO:
         """获取模型实例，优先级：
@@ -604,27 +457,11 @@ class InferenceService:
             start_time = time.time()
             model = self.get_model()
             
-            # 获取模型路径以确定是否为ONNX模型
-            model_path = None
-            if hasattr(model, 'ckpt_path'):
-                model_path = model.ckpt_path
-            elif hasattr(model, 'model') and hasattr(model.model, 'weights'):
-                model_path = model.model.weights
-            
-            # 如果还是获取不到，尝试从模型的其他属性获取
-            if not model_path:
-                # 尝试从模型缓存中获取路径
-                for cached_path in self.model_cache.keys():
-                    if cached_path.lower().endswith('.onnx'):
-                        model_path = cached_path
-                        break
-            
-            # 判断是否为ONNX模型
-            is_onnx = model_path and model_path.lower().endswith('.onnx')
+            # 判断是否为ONNX模型（通过检查model是否为ONNXInference实例）
+            is_onnx = isinstance(model, ONNXInference)
 
             # 处理文件输入（支持文件对象或路径字符串）
             original_temp_path = None
-            inference_input = None  # 用于存储推理输入（可能是路径或numpy数组）
             
             if isinstance(image_file, str):
                 # 如果是路径字符串，直接使用
@@ -636,148 +473,40 @@ class InferenceService:
                     temp_path = temp_img.name
                     original_temp_path = temp_path
 
-            # 如果是ONNX模型，先用OpenCV将图像调整为640x640，保存为临时文件
-            resized_temp_path = None
-            if is_onnx:
-                # 读取原始图像
-                img = cv2.imread(temp_path)
-                if img is None:
-                    raise ValueError(f"无法读取图像文件: {temp_path}")
-                
-                # 调整图像尺寸到640x640
-                img_resized = cv2.resize(img, (640, 640), interpolation=cv2.INTER_LINEAR)
-                
-                # 保存调整后的图像到临时文件
-                with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as resized_temp:
-                    resized_temp_path = resized_temp.name
-                cv2.imwrite(resized_temp_path, img_resized)
-                inference_input = resized_temp_path
-                logging.info(f"ONNX模型：已将图像调整为640x640并保存到临时文件")
-            else:
-                # 非ONNX模型，使用文件路径
-                inference_input = temp_path
-
             # 执行推理
             conf_thres = parameters.get('conf_thres', 0.25)
             iou_thres = parameters.get('iou_thres', 0.45)
             
-            # 构建推理参数
-            inference_kwargs = {
-                'conf': conf_thres,
-                'iou': iou_thres,
-                'verbose': False  # 减少日志输出
-            }
-            
-            # 如果是ONNX模型，不传递imgsz参数（因为我们已经手动resize了图像到640x640）
-            # 让ultralytics直接使用文件，不进行额外的resize
             if is_onnx:
-                logging.info(f"ONNX模型推理，使用已调整的640x640图像文件")
-
-            try:
-                # 使用inference_input（可能是文件路径或numpy数组）
-                results = model(inference_input, **inference_kwargs)
-            except TypeError as e:
-                error_msg = str(e)
-                # 处理0维张量的错误（通常发生在ONNX模型返回空检测结果时）
-                if 'len() of a 0-d tensor' in error_msg:
-                    logging.warning(f"检测到0维张量错误（通常表示没有检测到目标）: {error_msg}")
-                    if is_onnx:
-                        # 对于ONNX模型，当出现0维张量错误时，通常意味着没有检测到任何目标
-                        # 我们需要创建一个空结果对象
-                        logging.info("ONNX模型返回空检测结果，创建空结果对象")
-                        try:
-                            # 尝试使用更低的置信度阈值重新推理
-                            inference_kwargs_lower = inference_kwargs.copy()
-                            inference_kwargs_lower['conf'] = max(0.01, conf_thres * 0.5)  # 降低置信度阈值
-                            logging.info(f"尝试使用更低的置信度阈值 {inference_kwargs_lower['conf']} 重新推理")
-                            results = model(inference_input, **inference_kwargs_lower)
-                        except (TypeError, RuntimeError) as retry_error:
-                            # 如果仍然失败，尝试使用模型进行一次"安全"推理
-                            # 使用极低的置信度阈值和IOU阈值，并禁用NMS
-                            logging.warning(f"使用低置信度阈值仍然失败: {retry_error}")
-                            logging.info("尝试使用极低阈值进行最后一次推理...")
-                            try:
-                                # 使用极低的阈值，并设置max_det为0来避免NMS问题
-                                safe_kwargs = {
-                                    'conf': 0.001,  # 极低置信度
-                                    'iou': 0.99,    # 高IOU阈值，减少NMS操作
-                                    'max_det': 300, # 限制最大检测数
-                                    'verbose': False
-                                }
-                                results = model(inference_input, **safe_kwargs)
-                                logging.info("使用极低阈值推理成功")
-                            except Exception as final_error:
-                                # 如果所有方法都失败，创建一个模拟的空结果
-                                logging.error(f"所有推理尝试都失败: {final_error}")
-                                logging.info("创建空结果对象...")
-                                # 读取图像以获取尺寸信息
-                                img_path = temp_path if isinstance(inference_input, str) else inference_input
-                                img = cv2.imread(img_path)
-                                if img is None:
-                                    img = np.zeros((640, 640, 3), dtype=np.uint8)
-                                
-                                # 使用模型进行一次"虚拟"推理来获取正确的Results对象结构
-                                # 但使用一个全黑图像，这样应该不会检测到任何目标
-                                try:
-                                    black_img = np.zeros_like(img)
-                                    # 保存为临时文件
-                                    with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as black_temp:
-                                        black_temp_path = black_temp.name
-                                    cv2.imwrite(black_temp_path, black_img)
-                                    # 使用全黑图像进行推理（应该返回空结果）
-                                    results = model(black_temp_path, conf=0.99, verbose=False)
-                                    # 清理临时文件
-                                    try:
-                                        os.unlink(black_temp_path)
-                                    except:
-                                        pass
-                                    logging.info("使用全黑图像创建空结果成功")
-                                except Exception:
-                                    # 如果还是失败，抛出原始错误
-                                    raise retry_error
-                    else:
-                        # 对于非ONNX模型，也尝试降低置信度阈值
-                        logging.info("非ONNX模型出现0维张量错误，尝试降低置信度阈值")
-                        inference_kwargs_lower = inference_kwargs.copy()
-                        inference_kwargs_lower['conf'] = max(0.01, conf_thres * 0.5)
-                        results = model(inference_input, **inference_kwargs_lower)
-                else:
-                    # 其他TypeError直接抛出
-                    raise
-            except RuntimeError as e:
-                error_msg = str(e)
-                # 如果是设备转换错误，尝试修复
-                if 'data transfer' in error_msg.lower() or 'device' in error_msg.lower():
-                    logging.warning(f"推理时出现设备转换错误: {error_msg}")
-                    logging.info("尝试清除模型缓存并重新加载...")
-                    
-                    # 清除模型缓存
-                    model_path = None
-                    if hasattr(model, 'ckpt_path'):
-                        model_path = model.ckpt_path
-                    elif hasattr(model, 'model') and hasattr(model.model, 'weights'):
-                        model_path = model.model.weights
-                    
-                    # 如果找到模型路径，清除缓存并重新加载
-                    if model_path and model_path in self.model_cache:
-                        del self.model_cache[model_path]
-                        logging.info(f"已清除模型缓存: {model_path}")
-                    
-                    # 重新加载模型
-                    model = self.get_model()
-                    
-                    # 再次尝试推理
-                    logging.info("重新尝试推理...")
-                    results = model(inference_input, **inference_kwargs)
-                else:
-                    # 其他错误直接抛出
-                    raise
+                # 使用新的ONNX推理模块
+                output_image, detections = model.detect(
+                    temp_path,
+                    conf_threshold=conf_thres,
+                    iou_threshold=iou_thres,
+                    draw=True
+                )
+                # 将ONNX结果转换为与YOLO结果兼容的格式
+                # 创建一个模拟的Results对象
+                class ONNXResults:
+                    def __init__(self, image, detections):
+                        self.image = image
+                        self.detections = detections
+                
+                results = [ONNXResults(output_image, detections)]
+            else:
+                # 使用YOLO模型推理
+                inference_kwargs = {
+                    'conf': conf_thres,
+                    'iou': iou_thres,
+                    'verbose': False
+                }
+                results = model(temp_path, **inference_kwargs)
 
             # 获取原始图片URL（从record的input_source获取）
             original_image_url = record.input_source if record.input_source else None
             
             # 处理结果，传递原始图片URL
-            result_data = self._process_image_results(results, record.id, original_image_url)
+            result_data = self._process_image_results(results, record.id, original_image_url, is_onnx=is_onnx)
 
             # 更新任务记录：保存结果图片URL
             record.output_path = result_data.get('result_url')
@@ -797,12 +526,6 @@ class InferenceService:
             raise
         finally:
             # 清理资源和显存
-            # 清理调整后的临时文件（ONNX模型）
-            if 'resized_temp_path' in locals() and resized_temp_path and os.path.exists(resized_temp_path):
-                try:
-                    os.unlink(resized_temp_path)
-                except:
-                    pass
             # 清理原始临时文件（如果是文件对象上传的）
             if 'original_temp_path' in locals() and original_temp_path and os.path.exists(original_temp_path):
                 try:
@@ -811,12 +534,13 @@ class InferenceService:
                     pass
             self._cleanup_memory()
 
-    def _process_image_results(self, results, task_id: str, original_image_url: str = None) -> Dict[str, Any]:
+    def _process_image_results(self, results, task_id: str, original_image_url: str = None, is_onnx: bool = False) -> Dict[str, Any]:
         """处理图片推理结果，生成可视化图和检测数据，并上传到MinIO
         Args:
-            results: YOLO推理结果
+            results: YOLO推理结果或ONNX推理结果
             task_id: 任务ID
             original_image_url: 原始图片的MinIO URL
+            is_onnx: 是否为ONNX模型推理结果
         """
         result_image_path = None
         json_path = None
@@ -826,20 +550,30 @@ class InferenceService:
             result_image_path = os.path.join(temp_dir, 'result.jpg')
             json_path = os.path.join(temp_dir, 'detections.json')
 
-            # 保存结果图像到临时文件
-            results[0].save(filename=result_image_path)
+            # 提取检测结果和保存结果图像
+            if is_onnx:
+                # ONNX推理结果：results[0]是ONNXResults对象
+                result_obj = results[0]
+                # 保存结果图像
+                cv2.imwrite(result_image_path, result_obj.image)
+                # 使用ONNX推理返回的检测结果
+                detections = result_obj.detections
+            else:
+                # YOLO推理结果
+                # 保存结果图像到临时文件
+                results[0].save(filename=result_image_path)
 
-            # 提取检测结果
-            detections = []
-            for i, result in enumerate(results):
-                boxes = result.boxes
-                for box in boxes:
-                    detections.append({
-                        'class': int(box.cls.item()),
-                        'class_name': result.names[int(box.cls.item())],
-                        'confidence': float(box.conf.item()),
-                        'bbox': box.xyxy.tolist()[0],
-                    })
+                # 提取检测结果
+                detections = []
+                for i, result in enumerate(results):
+                    boxes = result.boxes
+                    for box in boxes:
+                        detections.append({
+                            'class': int(box.cls.item()),
+                            'class_name': result.names[int(box.cls.item())],
+                            'confidence': float(box.conf.item()),
+                            'bbox': box.xyxy.tolist()[0],
+                        })
 
             # 保存JSON检测结果到临时文件
             import json
@@ -1043,30 +777,21 @@ class InferenceService:
                 # 在应用上下文中加载模型
                 model = self.get_model()
                 
-                # 获取模型路径以确定是否为ONNX模型
-                model_path = None
-                if hasattr(model, 'ckpt_path'):
-                    model_path = model.ckpt_path
-                elif hasattr(model, 'model') and hasattr(model.model, 'weights'):
-                    model_path = model.model.weights
-                
-                # 如果还是获取不到，尝试从模型的其他属性获取
-                if not model_path:
-                    # 尝试从模型缓存中获取路径
-                    for cached_path in self.model_cache.keys():
-                        if cached_path.lower().endswith('.onnx'):
-                            model_path = cached_path
-                            break
-                
-                # 判断是否为ONNX模型
-                is_onnx = model_path and model_path.lower().endswith('.onnx')
+                # 判断是否为ONNX模型（通过检查model是否为ONNXInference实例）
+                is_onnx = isinstance(model, ONNXInference)
                 
                 # 构建推理参数
-                inference_kwargs = {'verbose': False}
-                # 如果是ONNX模型，固定使用imgsz=640
+                conf_thres = parameters.get('conf_thres', 0.25) if parameters else 0.25
+                iou_thres = parameters.get('iou_thres', 0.45) if parameters else 0.45
+                
                 if is_onnx:
-                    inference_kwargs['imgsz'] = 640
-                    logging.info(f"视频推理：ONNX模型，固定使用imgsz=640")
+                    logging.info(f"视频推理：使用ONNX模型")
+                else:
+                    inference_kwargs = {
+                        'conf': conf_thres,
+                        'iou': iou_thres,
+                        'verbose': False
+                    }
                 
                 start_time = time.time()
 
@@ -1139,16 +864,20 @@ class InferenceService:
 
                     # 跳帧策略
                     if frame_count % frame_skip == 0:
-                        # 如果是ONNX模型，先将帧调整为640x640
                         if is_onnx:
-                            frame_resized = cv2.resize(frame, (640, 640), interpolation=cv2.INTER_LINEAR)
-                            results = model(frame_resized, **inference_kwargs)
-                        else:
-                            results = model(frame, **inference_kwargs)
-                        annotated_frame = results[0].plot()
-                        # 将标注后的帧调整回原始尺寸
-                        if is_onnx:
+                            # 使用新的ONNX推理模块
+                            annotated_frame, _ = model.detect(
+                                frame,
+                                conf_threshold=conf_thres,
+                                iou_threshold=iou_thres,
+                                draw=True
+                            )
+                            # 将标注后的帧调整回原始尺寸
                             annotated_frame = cv2.resize(annotated_frame, frame_size, interpolation=cv2.INTER_LINEAR)
+                        else:
+                            # 使用YOLO模型推理
+                            results = model(frame, **inference_kwargs)
+                            annotated_frame = results[0].plot()
                         out.write(annotated_frame)
                         processed_frames += 1
                     else:
@@ -1319,30 +1048,21 @@ class InferenceService:
         try:
             model = self.get_model()
             
-            # 获取模型路径以确定是否为ONNX模型
-            model_path = None
-            if hasattr(model, 'ckpt_path'):
-                model_path = model.ckpt_path
-            elif hasattr(model, 'model') and hasattr(model.model, 'weights'):
-                model_path = model.model.weights
-            
-            # 如果还是获取不到，尝试从模型的其他属性获取
-            if not model_path:
-                # 尝试从模型缓存中获取路径
-                for cached_path in self.model_cache.keys():
-                    if cached_path.lower().endswith('.onnx'):
-                        model_path = cached_path
-                        break
-            
-            # 判断是否为ONNX模型
-            is_onnx = model_path and model_path.lower().endswith('.onnx')
+            # 判断是否为ONNX模型（通过检查model是否为ONNXInference实例）
+            is_onnx = isinstance(model, ONNXInference)
             
             # 构建推理参数
-            inference_kwargs = {'verbose': False}
-            # 如果是ONNX模型，固定使用imgsz=640
+            conf_thres = parameters.get('conf_thres', 0.25) if parameters else 0.25
+            iou_thres = parameters.get('iou_thres', 0.45) if parameters else 0.45
+            
             if is_onnx:
-                inference_kwargs['imgsz'] = 640
-                logging.info(f"RTSP流推理：ONNX模型，固定使用imgsz=640")
+                logging.info(f"RTSP流推理：使用ONNX模型")
+            else:
+                inference_kwargs = {
+                    'conf': conf_thres,
+                    'iou': iou_thres,
+                    'verbose': False
+                }
 
             # RTSP流配置
             cap = cv2.VideoCapture(rtsp_url)
@@ -1392,16 +1112,20 @@ class InferenceService:
 
                 # 跳帧处理
                 if frame_count % frame_skip == 0:
-                    # 如果是ONNX模型，先将帧调整为640x640
                     if is_onnx:
-                        frame_resized = cv2.resize(frame, (640, 640), interpolation=cv2.INTER_LINEAR)
-                        results = model(frame_resized, **inference_kwargs)
-                    else:
-                        results = model(frame, **inference_kwargs)
-                    processed_frame = results[0].plot()
-                    # 将标注后的帧调整回原始尺寸
-                    if is_onnx:
+                        # 使用新的ONNX推理模块
+                        processed_frame, _ = model.detect(
+                            frame,
+                            conf_threshold=conf_thres,
+                            iou_threshold=iou_thres,
+                            draw=True
+                        )
+                        # 将标注后的帧调整回原始尺寸
                         processed_frame = cv2.resize(processed_frame, (width, height), interpolation=cv2.INTER_LINEAR)
+                    else:
+                        # 使用YOLO模型推理
+                        results = model(frame, **inference_kwargs)
+                        processed_frame = results[0].plot()
                     ffmpeg_process.stdin.write(processed_frame.tobytes())
                 else:
                     ffmpeg_process.stdin.write(frame.tobytes())
