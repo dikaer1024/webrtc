@@ -224,17 +224,21 @@ def create_app():
 
     # 注册蓝图（延迟导入，避免在环境变量加载前就导入）
     try:
-        from app.blueprints import export, inference_task, model, train, train_task, llm, ocr, speech, deploy_service
+        from app.blueprints import export, inference, model, train, train_task, llm, ocr, speech, deploy
         
         app.register_blueprint(export.export_bp, url_prefix='/model/export')
-        app.register_blueprint(inference_task.inference_task_bp, url_prefix='/model/inference_task')
+        app.register_blueprint(inference.inference_task_bp, url_prefix='/model/inference_task')
         app.register_blueprint(model.model_bp, url_prefix='/model')
         app.register_blueprint(train.train_bp, url_prefix='/model/train')
         app.register_blueprint(train_task.train_task_bp, url_prefix='/model/train_task')
         app.register_blueprint(llm.llm_bp, url_prefix='/model/llm')
         app.register_blueprint(ocr.ocr_bp, url_prefix='/model/ocr')
         app.register_blueprint(speech.speech_bp, url_prefix='/model/speech')
-        app.register_blueprint(deploy_service.deploy_service_bp, url_prefix='/model/deploy_service')
+        app.register_blueprint(deploy.deploy_service_bp, url_prefix='/model/deploy_service')
+        
+        # 注册集群推理接口（使用不同的路由，不影响原有推理接口）
+        from app.blueprints import cluster
+        app.register_blueprint(cluster.cluster_inference_bp, url_prefix='/model')
         print(f"✅ 所有蓝图注册成功")
     except Exception as e:
         print(f"❌ 蓝图注册失败: {str(e)}")
