@@ -5,8 +5,18 @@
 """
 from flask_sqlalchemy import SQLAlchemy
 from datetime import datetime
+import pytz
 
 db = SQLAlchemy()
+
+# 时区设置
+BEIJING_TZ = pytz.timezone('Asia/Shanghai')
+
+def beijing_now():
+    """获取当前北京时间（无时区信息的datetime对象，用于数据库存储）"""
+    beijing_dt = datetime.now(BEIJING_TZ)
+    # 返回无时区信息的datetime对象，因为数据库字段不支持时区
+    return beijing_dt.replace(tzinfo=None)
 
 class Model(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -54,7 +64,7 @@ class ExportRecord(db.Model):
     format = db.Column(db.String(50), nullable=False)
     minio_path = db.Column(db.String(500))
     local_path = db.Column(db.String(500))
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    created_at = db.Column(db.DateTime, default=beijing_now)  # 使用北京时间
     status = db.Column(db.String(20), default='PENDING')  # 新增状态字段
     message = db.Column(db.Text)  # 新增错误信息字段
     model = db.relationship('Model', back_populates='export_records')

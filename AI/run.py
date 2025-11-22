@@ -97,6 +97,16 @@ load_env_file(args.env)
 os.environ['ORT_EXECUTION_PROVIDERS'] = 'CPUExecutionProvider'
 print("✅ 已设置 ONNX Runtime 使用 CPU 执行提供者")
 
+# 如果未设置 CUDA_VISIBLE_DEVICES，临时隐藏 GPU 以避免 onnxruntime-gpu 在导入时加载 CUDA 库
+# 注意：这不会影响已经设置的 CUDA_VISIBLE_DEVICES（例如在 docker-compose.yaml 中设置的）
+# 如果需要在其他地方使用 GPU（如 PyTorch），可以在环境变量中明确设置 CUDA_VISIBLE_DEVICES
+if 'CUDA_VISIBLE_DEVICES' not in os.environ:
+    # 临时设置空值，避免 onnxruntime-gpu 在导入时尝试加载 CUDA 库
+    # 如果后续需要使用 GPU，可以在导入 onnxruntime 相关模块后重新设置
+    os.environ['CUDA_VISIBLE_DEVICES'] = ''
+    print("⚠️  临时隐藏 GPU 设备以避免 onnxruntime-gpu 导入时的 CUDA 库加载错误")
+    print("   如需使用 GPU，请在环境变量中设置 CUDA_VISIBLE_DEVICES（例如：CUDA_VISIBLE_DEVICES=0）")
+
 
 def get_local_ip():
     # 方案1: 环境变量优先
@@ -151,6 +161,31 @@ def create_app():
     app.config['SQLALCHEMY_DATABASE_URI'] = database_url
     app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
     app.config['TIMEZONE'] = 'Asia/Shanghai'
+    
+    # 配置 Flask URL 生成（用于在异步任务中使用 url_for）
+    # 从环境变量获取配置，如果没有则从运行参数推断
+    host = os.getenv('FLASK_RUN_HOST', '0.0.0.0')
+    port = int(os.getenv('FLASK_RUN_PORT', 5000))
+    
+    # 如果配置了 SERVER_NAME，使用它；否则根据 host 和 port 构建
+    server_name = os.getenv('FLASK_SERVER_NAME')
+    if not server_name:
+        # 如果 host 是 0.0.0.0，尝试获取实际 IP
+        if host == '0.0.0.0':
+            try:
+                actual_ip = os.getenv('POD_IP') or get_local_ip()
+                server_name = f"{actual_ip}:{port}"
+            except Exception as e:
+                # 如果无法获取 IP，使用 localhost
+                print(f"⚠️  无法获取本地IP，使用localhost作为SERVER_NAME: {str(e)}")
+                server_name = f"localhost:{port}"
+        else:
+            server_name = f"{host}:{port}"
+    
+    app.config['SERVER_NAME'] = server_name
+    app.config['APPLICATION_ROOT'] = os.getenv('FLASK_APPLICATION_ROOT', '/')
+    app.config['PREFERRED_URL_SCHEME'] = os.getenv('FLASK_PREFERRED_URL_SCHEME', 'http')
+    print(f"✅ Flask URL配置: SERVER_NAME={server_name}, APPLICATION_ROOT={app.config['APPLICATION_ROOT']}, PREFERRED_URL_SCHEME={app.config['PREFERRED_URL_SCHEME']}")
 
     # 创建数据目录
     os.makedirs('data/uploads', exist_ok=True)

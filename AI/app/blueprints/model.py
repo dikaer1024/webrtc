@@ -17,7 +17,7 @@ from app.services.minio_service import ModelService
 from app.utils.yolo_validator import validate_yolo_model
 from app.utils.image_utils import download_default_model_image
 from db_models import TrainTask
-from db_models import db, Model
+from db_models import db, Model, InferenceTask
 from sqlalchemy.exc import IntegrityError
 
 model_bp = Blueprint('model', __name__)
@@ -184,7 +184,8 @@ def upload_model_file():
         object_key = f"images/{unique_filename}"
 
         # 上传到MinIO
-        if ModelService.upload_to_minio(bucket_name, object_key, temp_path):
+        upload_success, upload_error = ModelService.upload_to_minio(bucket_name, object_key, temp_path)
+        if upload_success:
             # 生成URL（直接拼接字符串）
             download_url = f"/api/v1/buckets/{bucket_name}/objects/download?prefix={object_key}"
 
@@ -336,8 +337,10 @@ def upload_custom_model():
         else:
             object_key = f"yolo/{yolo_version}/{unique_filename}"
 
-        if not ModelService.upload_to_minio(bucket_name, object_key, temp_path):
-            return jsonify({'code': 500, 'msg': '文件上传到MinIO失败'}), 500
+        upload_success, upload_error = ModelService.upload_to_minio(bucket_name, object_key, temp_path)
+        if not upload_success:
+            error_msg = upload_error or '文件上传到MinIO失败'
+            return jsonify({'code': 500, 'msg': error_msg}), 500
 
         # 生成下载URL
         download_url = f"/api/v1/buckets/{bucket_name}/objects/download?prefix={object_key}"
@@ -391,7 +394,8 @@ def upload_custom_model():
                         bucket_name = 'models'
                         image_object_key = f"images/{default_image_filename}"
                         
-                        if ModelService.upload_to_minio(bucket_name, image_object_key, default_image_path):
+                        upload_success, upload_error = ModelService.upload_to_minio(bucket_name, image_object_key, default_image_path)
+                        if upload_success:
                             image_url = f"/api/v1/buckets/{bucket_name}/objects/download?prefix={image_object_key}"
                             logger.info(f"默认图片已上传: {image_url}")
                         else:
@@ -607,18 +611,60 @@ def update_model(model_id):
 
 @model_bp.route('/<int:model_id>/delete', methods=['POST'])
 def delete_model(model_id):
-    model = Model.query.get_or_404(model_id)
-    model_name = model.name
+    try:
+        model = Model.query.get_or_404(model_id)
+        model_name = model.name
 
-    model_path = os.path.join('data/datasets', str(model_id))
-    if os.path.exists(model_path):
-        shutil.rmtree(model_path)
+        # 检查是否有相关的推理任务记录
+        inference_tasks_count = InferenceTask.query.filter_by(model_id=model_id).count()
+        if inference_tasks_count > 0:
+            return jsonify({
+                'code': 400,
+                'msg': f'无法删除模型"{model_name}"，该模型正在被{inference_tasks_count}个推理任务使用。请先删除相关的推理任务后再试。'
+            }), 400
 
-    db.session.delete(model)
-    db.session.commit()
+        # 检查是否有相关的训练任务记录
+        train_tasks_count = TrainTask.query.filter_by(model_id=model_id).count()
+        if train_tasks_count > 0:
+            return jsonify({
+                'code': 400,
+                'msg': f'无法删除模型"{model_name}"，该模型正在被{train_tasks_count}个训练任务使用。请先删除相关的训练任务后再试。'
+            }), 400
 
-    flash(f'项目 "{model_name}" 已删除', 'success')
-    return redirect(url_for('main.index'))
+        # 删除本地数据集目录（如果存在）
+        model_path = os.path.join('data/datasets', str(model_id))
+        if os.path.exists(model_path):
+            try:
+                shutil.rmtree(model_path)
+                logger.info(f"已删除模型数据集目录: {model_path}")
+            except Exception as e:
+                logger.warning(f"删除模型数据集目录失败: {model_path}, 错误: {str(e)}")
+
+        # 删除数据库记录
+        db.session.delete(model)
+        db.session.commit()
+
+        logger.info(f"模型已删除: {model_id} - {model_name}")
+        return jsonify({
+            'code': 0,
+            'msg': f'模型"{model_name}"已成功删除'
+        })
+
+    except IntegrityError as e:
+        db.session.rollback()
+        logger.error(f"删除模型失败（外键约束）: {str(e)}")
+        return jsonify({
+            'code': 400,
+            'msg': f'无法删除模型，该模型正在被其他记录使用。请先删除相关的关联记录后再试。'
+        }), 400
+
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f"删除模型失败: {str(e)}", exc_info=True)
+        return jsonify({
+            'code': 500,
+            'msg': f'服务器内部错误: {str(e)}'
+        }), 500
 
 
 @model_bp.route('/ota_check', methods=['GET'])
@@ -754,11 +800,12 @@ def download_model(model_id):
         tmp_file.close()
 
         # 从MinIO下载
-        if not ModelService.download_from_minio(bucket_name, object_key, tmp_file.name):
+        success, error_msg = ModelService.download_from_minio(bucket_name, object_key, tmp_file.name)
+        if not success:
             return jsonify({
-                'code': 500,
-                'msg': '从MinIO下载文件失败'
-            }), 500
+                'code': 404 if error_msg and '不存在' in error_msg else 500,
+                'msg': error_msg or '从MinIO下载文件失败'
+            }), 404 if error_msg and '不存在' in error_msg else 500
 
         # 确定文件扩展名
         file_ext = '.onnx' if model.onnx_model_path and not model.model_path else '.pt'
