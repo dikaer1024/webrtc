@@ -61,8 +61,9 @@ def download_file_from_url(url: str, temp_dir: str = None) -> str:
     temp_path = os.path.join(temp_dir, filename)
     
     # 从MinIO下载
-    if not ModelService.download_from_minio(bucket_name, object_key, temp_path):
-        raise Exception(f"从MinIO下载文件失败: {bucket_name}/{object_key}")
+    success, error_msg = ModelService.download_from_minio(bucket_name, object_key, temp_path)
+    if not success:
+        raise Exception(f"从MinIO下载文件失败: {bucket_name}/{object_key}. {error_msg or ''}")
     
     return temp_path
 
@@ -93,7 +94,8 @@ def upload_input_file():
         bucket_name = 'inference-inputs'
         object_key = f"inputs/{unique_filename}"
 
-        if ModelService.upload_to_minio(bucket_name, object_key, temp_path):
+        upload_success, upload_error = ModelService.upload_to_minio(bucket_name, object_key, temp_path)
+        if upload_success:
             # 生成URL
             download_url = f"/api/v1/buckets/{bucket_name}/objects/download?prefix={object_key}"
 
@@ -372,7 +374,8 @@ def run_inference(model_id):
                 bucket_name = 'inference-inputs'
                 object_key = f"inputs/{unique_filename}"
                 
-                if ModelService.upload_to_minio(bucket_name, object_key, uploaded_file_path):
+                upload_success, upload_error = ModelService.upload_to_minio(bucket_name, object_key, uploaded_file_path)
+                if upload_success:
                     # 生成MinIO URL
                     actual_input_source = f"/api/v1/buckets/{bucket_name}/objects/download?prefix={object_key}"
                 else:

@@ -7,6 +7,15 @@ ONNX模型验证工具
 @wechat EasyAIoT2025
 """
 import os
+# 在导入onnxruntime之前设置环境变量，强制使用CPU执行提供者
+# 这样可以避免CUDA库加载错误（如cublasLtCreate符号未找到）
+# 注意：这些环境变量需要在导入onnxruntime之前设置
+if 'ORT_EXECUTION_PROVIDERS' not in os.environ:
+    os.environ['ORT_EXECUTION_PROVIDERS'] = 'CPUExecutionProvider'
+# 隐藏GPU设备，避免onnxruntime-gpu在导入时尝试加载CUDA库
+if 'CUDA_VISIBLE_DEVICES' not in os.environ:
+    os.environ['CUDA_VISIBLE_DEVICES'] = ''
+
 from typing import Optional, Tuple
 
 try:

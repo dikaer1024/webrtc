@@ -30,6 +30,15 @@
                       alt="模型图片"
                       class="model-image"
                     />
+                    <!-- 图片上的小卡片 -->
+                    <div class="image-badges">
+                      <div class="badge badge-format" v-if="getFormatText(item)">
+                        {{ getFormatText(item) }}
+                      </div>
+                      <div class="badge badge-version" v-if="item.version">
+                        v{{ item.version }}
+                      </div>
+                    </div>
                   </div>
 
                   <h6 class="model-card-title">
@@ -208,6 +217,32 @@ function formatDate(dateString: string) {
   return dateString ? new Date(dateString).toLocaleDateString() : '--';
 }
 
+function getFormatText(item: any): string {
+  // 根据模型路径判断格式
+  if (item.onnx_model_path) {
+    return 'ONNX';
+  }
+  if (item.model_path) {
+    const path = item.model_path.toLowerCase();
+    if (path.endsWith('.onnx')) {
+      return 'ONNX';
+    }
+    if (path.endsWith('.pt') || path.endsWith('.pth')) {
+      return 'PyTorch';
+    }
+    if (path.includes('openvino')) {
+      return 'OpenVINO';
+    }
+    if (path.endsWith('.tflite')) {
+      return 'TensorFlow Lite';
+    }
+    // 默认返回 PyTorch（因为大多数模型是 PyTorch 格式）
+    return 'PyTorch';
+  }
+  // 如果没有路径信息，返回空字符串
+  return '';
+}
+
 function handleDelete(record: object) {
   emit('delete', record);
 }
@@ -373,6 +408,37 @@ function handleDownload(record: object) {
   width: 100%;
   height: 100%;
   object-fit: cover;
+}
+
+/* 图片上的小卡片 */
+.image-badges {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  z-index: 10;
+}
+
+.badge {
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.2;
+  white-space: nowrap;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+  backdrop-filter: blur(4px);
+  color: #fff;
+  
+  &.badge-format {
+    background: rgba(24, 144, 255, 0.85);
+  }
+  
+  &.badge-version {
+    background: rgba(82, 196, 26, 0.85);
+  }
 }
 
 /* 标签样式 */

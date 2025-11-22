@@ -183,7 +183,8 @@ class OCRService:
             object_key = f"{unique_filename}"
 
             # 上传到OSS
-            if ModelService.upload_to_minio(self.oss_bucket_name, object_key, image_path):
+            upload_success, upload_error = ModelService.upload_to_minio(self.oss_bucket_name, object_key, image_path)
+            if upload_success:
                 # 按照指定结构生成访问URL
                 image_url = f"/api/v1/buckets/{self.oss_bucket_name}/objects/download?prefix={object_key}"
                 return image_url
