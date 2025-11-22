@@ -25,6 +25,28 @@
           </div>
         </div>
 
+        <!-- 模型服务选择（仅在图片推理时显示） -->
+        <div class="config-section" v-if="state.activeSource === 'image'">
+          <div class="section-title">
+            <SettingOutlined class="icon" />
+            <span>模型服务</span>
+            <Tooltip title="推理用模型服务优先级高于模型选择">
+              <QuestionCircleOutlined class="icon tip-icon" />
+            </Tooltip>
+            <ReloadOutlined class="icon refresh-icon" @click="loadDeployServices" :class="{ spinning: state.deployServicesLoading }" title="刷新服务列表" />
+          </div>
+          <div class="config-options">
+            <div class="input-group">
+              <select class="select-field" v-model="state.selectedDeployServiceId" @change="handleDeployServiceChange">
+                <option :value="null">请选择模型服务</option>
+                <option v-for="service in state.deployServices" :key="service.id" :value="service.id">
+                  {{ service.model_name }}服务（v{{ service.model_version }}）
+                </option>
+              </select>
+            </div>
+          </div>
+        </div>
+
         <!-- 历史推理记录 -->
         <div class="config-section">
           <div class="section-title">
@@ -75,9 +97,6 @@
                   <span>{{ state.uploadedImageFile ? state.uploadedImageFile.name : '选择图片文件' }}</span>
                 </label>
               </div>
-              <div v-if="state.uploadedImage" class="upload-preview">
-                <img :src="state.uploadedImage" alt="预览" class="preview-image">
-              </div>
             </div>
             <div class="source-content" v-else-if="state.activeSource === 'video'">
               <div class="file-upload-wrapper">
@@ -93,12 +112,6 @@
                   <VideoCameraOutlined class="icon" />
                   <span>{{ state.uploadedVideoFile ? state.uploadedVideoFile.name : '选择视频文件' }}</span>
                 </label>
-              </div>
-              <div v-if="state.uploadedVideoFile" class="upload-preview">
-                <div class="file-info">
-                  <span class="file-name">已选择: {{ state.uploadedVideoFile.name }}</span>
-                  <span class="file-size">大小: {{ formatFileSize(state.uploadedVideoFile.size) }}</span>
-                </div>
               </div>
             </div>
             <div class="source-content" v-else-if="state.activeSource === 'rtsp'">
@@ -333,8 +346,10 @@
 
 <script setup lang="ts">
 import { computed, reactive, ref, onMounted, onUnmounted, nextTick } from "vue";
-import { getModelPage, runInference, uploadInputFile, getInferenceTaskDetail, getInferenceTasks } from "@/api/device/model";
+import { useRoute, useRouter } from "vue-router";
+import { getModelPage, runInference, runClusterInference, uploadInputFile, getInferenceTaskDetail, getInferenceTasks, getDeployServicePage } from "@/api/device/model";
 import { useMessage } from '@/hooks/web/useMessage';
+import { Tooltip } from 'ant-design-vue';
 import {
   SettingOutlined,
   UploadOutlined,
@@ -351,7 +366,8 @@ import {
   ExperimentOutlined,
   SearchOutlined,
   ReloadOutlined,
-  HistoryOutlined
+  HistoryOutlined,
+  QuestionCircleOutlined
 } from '@ant-design/icons-vue';
 
 const { createMessage } = useMessage();
@@ -373,6 +389,15 @@ interface InferenceHistoryRecord {
   input_source: string;
   start_time: string;
   processing_time: number | null;
+}
+
+interface DeployService {
+  id: number;
+  service_name: string;
+  model_id: number;
+  model_name: string;
+  model_version: string;
+  status: string;
 }
 
 interface AppState {
@@ -411,6 +436,9 @@ interface AppState {
   historyLoading: boolean;
   selectedHistoryRecordId: string;
   historyInputSource: string | null; // 保存历史记录的 input_source URL
+  deployServices: DeployService[]; // 部署服务列表
+  selectedDeployServiceId: number | null; // 选中的部署服务ID
+  deployServicesLoading: boolean; // 部署服务加载状态
 }
 
 // 状态管理
@@ -445,7 +473,10 @@ const state = reactive<AppState>({
   inferenceHistory: [],
   historyLoading: false,
   selectedHistoryRecordId: '',
-  historyInputSource: null
+  historyInputSource: null,
+  deployServices: [],
+  selectedDeployServiceId: null,
+  deployServicesLoading: false
 });
 
 // 轮询超时时间（5分钟）
@@ -559,23 +590,43 @@ const startDetection = async () => {
       formData.append('input_source', state.rtspUrl);
     }
 
-    // 调用推理接口
-    // 重要：用户上传的模型应该传递实际的 model_id（数字），而不是转换为 0
-    // 只有默认模型（yolov8/yolov11）才传递 0
-    let modelId: number;
-    if (state.selectedModelId === 'yolov8' || state.selectedModelId === 'yolov11') {
-      modelId = 0; // 默认模型使用 0
-    } else if (typeof state.selectedModelId === 'number') {
-      modelId = state.selectedModelId; // 用户上传的模型使用实际的 ID
-    } else if (typeof state.selectedModelId === 'string' && state.selectedModelId !== '') {
-      // 如果 selectedModelId 是字符串且不是空字符串，尝试转换为数字
-      const parsedId = parseInt(state.selectedModelId, 10);
-      modelId = isNaN(parsedId) ? 0 : parsedId;
-    } else {
-      modelId = 0; // 默认值
+    // 判断使用哪个接口：优先使用模型服务接口（集群接口）
+    let response;
+    let useClusterService = false;
+    
+    if (state.selectedDeployServiceId && state.activeSource === 'image') {
+      // 使用模型服务接口（集群接口）
+      const selectedService = state.deployServices.find(s => s.id === state.selectedDeployServiceId);
+      if (selectedService && selectedService.model_id) {
+        useClusterService = true;
+        const clusterModelId = selectedService.model_id;
+        response = await runClusterInference(clusterModelId, formData);
+      } else {
+        createMessage.warning('选中的模型服务无效，将使用模型列表接口');
+        useClusterService = false;
+      }
     }
     
-    const response = await runInference(modelId, formData);
+    // 如果未选择模型服务或模型服务无效，使用模型列表接口
+    if (!useClusterService) {
+      // 调用推理接口
+      // 重要：用户上传的模型应该传递实际的 model_id（数字），而不是转换为 0
+      // 只有默认模型（yolov8/yolov11）才传递 0
+      let modelId: number;
+      if (state.selectedModelId === 'yolov8' || state.selectedModelId === 'yolov11') {
+        modelId = 0; // 默认模型使用 0
+      } else if (typeof state.selectedModelId === 'number') {
+        modelId = state.selectedModelId; // 用户上传的模型使用实际的 ID
+      } else if (typeof state.selectedModelId === 'string' && state.selectedModelId !== '') {
+        // 如果 selectedModelId 是字符串且不是空字符串，尝试转换为数字
+        const parsedId = parseInt(state.selectedModelId, 10);
+        modelId = isNaN(parsedId) ? 0 : parsedId;
+      } else {
+        modelId = 0; // 默认值
+      }
+      
+      response = await runInference(modelId, formData);
+    }
     
     // 当 isTransformResponse: false 时，返回的是整个 Axios 响应对象，需要访问 response.data 获取实际响应
     const responseData = response.data || response;
@@ -794,6 +845,33 @@ const loadModels = async () => {
   }
 };
 
+// 加载部署服务列表
+const loadDeployServices = async () => {
+  state.deployServicesLoading = true;
+  try {
+    const response = await getDeployServicePage({ pageNo: 1, pageSize: 100 });
+    if (response.code === 0) {
+      // 只显示运行中的服务
+      state.deployServices = (response.data || []).filter((service: DeployService) => 
+        service.status === 'running' && service.model_id
+      );
+    }
+  } catch (error: any) {
+    console.error('加载部署服务列表失败:', error);
+    createMessage.error('加载部署服务列表失败');
+  } finally {
+    state.deployServicesLoading = false;
+  }
+};
+
+// 处理部署服务选择变化
+const handleDeployServiceChange = () => {
+  state.detectionResult = null;
+  state.detectionCount = 0;
+  state.averageConfidence = 0;
+  stopPollingInferenceResult();
+};
+
 const handleModelChange = () => {
   state.detectionResult = null;
   state.detectionCount = 0;
@@ -808,6 +886,14 @@ const handleSourceChange = () => {
   cleanupVideoUrl();
   state.historyInputSource = null; // 清除历史记录的 input_source
   state.detectionResult = null;
+  
+  // 如果切换到图片推理，加载部署服务列表；否则清空选择
+  if (state.activeSource === 'image') {
+    loadDeployServices();
+  } else {
+    // 非图片推理时，清空模型服务选择（因为模型服务只支持图片推理）
+    state.selectedDeployServiceId = null;
+  }
 };
 
 // 处理图片加载错误
@@ -1316,6 +1402,11 @@ onMounted(() => {
   loadDetectionParams();
   loadModels();
   loadInferenceHistory();
+  
+  // 如果是图片推理，加载部署服务列表
+  if (state.activeSource === 'image') {
+    loadDeployServices();
+  }
 });
 
 // 组件卸载时清理
@@ -1454,6 +1545,18 @@ body {
       .icon {
         font-size: 18px;
         color: @primary-color;
+      }
+
+      .tip-icon {
+        cursor: help;
+        transition: color 0.3s ease;
+        color: @text-secondary;
+        font-size: 14px;
+        margin-left: 4px;
+
+        &:hover {
+          color: @primary-color;
+        }
       }
 
       .refresh-icon {
