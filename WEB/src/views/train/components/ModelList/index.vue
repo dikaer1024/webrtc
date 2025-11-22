@@ -29,11 +29,11 @@
               },
               {
                 tooltip: {
-                  title: '部署模型',
+                  title: '模型部署',
                   placement: 'top',
                 },
-                icon: 'ant-design:experiment-outlined', // 训练图标
-                onClick: handleTrain.bind(null, record),
+                icon: 'ant-design:experiment-outlined', // 部署图标
+                onClick: handleDeploy.bind(null, record),
               },
               {
                 tooltip: {
@@ -94,8 +94,10 @@ import { getBasicColumns, getFormConfig } from "./data";
 import ModelModal from "../ModelModal/index.vue";
 import { useModal } from "@/components/Modal";
 import { useRouter } from "vue-router";
-import { deleteModel, getModelPage, downloadModel } from "@/api/device/model";
+import { deleteModel, getModelPage, downloadModel, deployModel } from "@/api/device/model";
 import ModelCardList from "../ModelCardList/index.vue";
+
+const { createMessage, createConfirm } = useMessage();
 
 const [registerAddModel, { openModal: openAddModal }] = useModal();
 const router = useRouter();
@@ -136,10 +138,27 @@ function handleSuccess() {
 }
 
 // 新增部署处理函数
-function handleDeploy(record) {
-  console.log('处理模型部署', record);
-  // 实际部署逻辑
-}
+const handleDeploy = async (record) => {
+  createConfirm({
+    title: '模型部署',
+    iconType: 'warning',
+    content: `确认要部署模型"${record.name}"吗？部署后将创建一个独立的推理服务。`,
+    async onOk() {
+      try {
+        await deployModel({
+          model_id: record.id,
+          service_name: `${record.name}_${record.version || 'v1.0.0'}_${Date.now()}`,
+          start_port: 8000
+        });
+        createMessage.success('模型部署成功');
+        handleSuccess();
+      } catch (error) {
+        console.error('部署失败:', error);
+        createMessage.error('模型部署失败');
+      }
+    },
+  });
+};
 
 // 新增训练处理函数
 const handleTrain = async (record) => {
@@ -156,7 +175,6 @@ const handleTrain = async (record) => {
   }
 };
 
-const { createMessage } = useMessage();
 const [registerTable, { reload }] = useTable({
   canResize: true,
   showIndexColumn: false,

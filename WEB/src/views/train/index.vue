@@ -16,6 +16,9 @@
         <TabPane key="3" tab="模型导出">
           <ModelExport></ModelExport>
         </TabPane>
+        <TabPane key="4" tab="模型部署">
+          <DeployService></DeployService>
+        </TabPane>
       </Tabs>
     </div>
   </div>
@@ -27,6 +30,7 @@ import { TabPane, Tabs } from "ant-design-vue";
 import ModelList from "@/views/train/components/ModelList/index.vue";
 import AiModelTool from "@/views/train/components/AiModelTool/index.vue";
 import ModelExport from "@/views/train/components/ModelExport/index.vue";
+import DeployService from "@/views/train/components/DeployService/index.vue";
 
 defineOptions({name: 'TRAIN'})
 
