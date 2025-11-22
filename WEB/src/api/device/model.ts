@@ -6,6 +6,7 @@ enum Api {
   TrainTask = '/model/train_task',
   InferenceTask = '/model/inference_task',
   Export = '/model/export',
+  DeployService = '/model/deploy_service',
 }
 
 const commonApi = (method: 'get' | 'post' | 'delete' | 'put', url, params = {}, headers = {}, isTransformResponse = true) => {
@@ -206,5 +207,34 @@ export const downloadModel = (modelId, modelPath) => {
   }
   // 如果没有路径，使用模型 ID 下载接口
   return `${Api.Model}/${modelId}/download`;
+};
+
+// ================= 模型部署服务接口 =================
+export const getDeployServicePage = (params) => {
+  return commonApi('get', `${Api.DeployService}/list`, {params});
+};
+
+export const deployModel = (params) => {
+  return commonApi('post', `${Api.DeployService}/deploy`, {data: params});
+};
+
+export const startDeployService = (serviceId) => {
+  return commonApi('post', `${Api.DeployService}/${serviceId}/start`);
+};
+
+export const stopDeployService = (serviceId) => {
+  return commonApi('post', `${Api.DeployService}/${serviceId}/stop`);
+};
+
+export const restartDeployService = (serviceId) => {
+  return commonApi('post', `${Api.DeployService}/${serviceId}/restart`);
+};
+
+export const getDeployServiceLogs = (serviceId, params) => {
+  return commonApi('get', `${Api.DeployService}/${serviceId}/logs`, {params});
+};
+
+export const deleteDeployService = (serviceId) => {
+  return commonApi('post', `${Api.DeployService}/${serviceId}/delete`);
 };
 
