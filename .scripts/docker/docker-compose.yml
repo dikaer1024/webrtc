@@ -1,0 +1,319 @@
+services:
+  # Nacos Server
+  Nacos:
+    image: nacos/nacos-server:v2.5.1
+    container_name: nacos-server
+    restart: always
+    environment:
+      - PREFER_HOST_MODE=hostname
+      - MODE=standalone
+      - NACOS_AUTH_ENABLE=true
+      - NACOS_AUTH_IDENTITY_KEY=nacos
+      - NACOS_AUTH_IDENTITY_VALUE=nacos
+      - NACOS_AUTH_TOKEN=SecretKey345901234567890126785678901234567890123901234567890123445678
+      - JVM_XMS=512m
+      - JVM_XMX=512m
+      - JVM_XMN=256m
+      - JVM_MS=128m
+      - JVM_MMS=320m
+    volumes:
+      - ./standalone-logs/:/home/nacos/logs
+    ports:
+      - "9849:9849"
+      - "8848:8848"
+      - "9848:9848"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8848/nacos/actuator/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    networks:
+      - easyaiot-network
+
+  # PostgresSQL 初始化容器（设置权限，仅在需要时手动运行）
+  # 注意：正常情况下不需要运行此容器，权限已在安装脚本中设置
+  # 如需手动修复权限，运行: docker-compose run --rm PostgresSQL-init
+  PostgresSQL-init:
+    image: postgres:16.10
+    container_name: postgres-init
+    user: "0:0"
+    volumes:
+      - ./db_data/data:/var/lib/postgresql/data
+      - ./db_data/log:/var/log/postgresql
+    command: ["/bin/bash", "-c", "mkdir -p /var/lib/postgresql/data /var/log/postgresql && chown -R 999:999 /var/lib/postgresql/data /var/log/postgresql && chmod -R 700 /var/lib/postgresql/data && chmod -R 755 /var/log/postgresql && echo '权限设置完成'"]
+    restart: "no"
+    profiles:
+      - init
+    networks:
+      - easyaiot-network
+
+  # PostgresSQL Server
+  PostgresSQL:
+    image: postgres:16.10
+    container_name: postgres-server
+    restart: always
+    ports:
+      - "5432:5432"
+    environment:
+      - TZ=Asia/Shanghai
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=iot45722414822
+      - POSTGRES_DB=postgres
+      # 注意：移除 PGDATA 环境变量，使用默认路径 /var/lib/postgresql/data
+      # PostgreSQL 的行为：如果数据目录已存在且不为空，不会重新初始化，会使用已有的密码配置
+      # 只有当数据目录为空时，才会使用 POSTGRES_PASSWORD 环境变量初始化
+      # 这样可以避免因为 PGDATA 子目录不存在而导致的重新初始化问题
+    volumes:
+      - ./db_data/data:/var/lib/postgresql/data
+      - ./db_data/log:/var/log/postgresql
+    healthcheck:
+      # 改进的健康检查：不仅检查pg_isready，还检查是否能实际连接数据库
+      test: ["CMD-SHELL", "pg_isready -U postgres && psql -U postgres -d postgres -c 'SELECT 1' > /dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks:
+      - easyaiot-network
+
+  # TDengine Server
+  TDengine:
+    image: tdengine/tdengine:3.3.0.0
+    container_name: tdengine-server
+    privileged: true
+    restart: always
+    environment:
+      - TZ=Asia/Shanghai
+    ports:
+      - "6030:6030"
+      - "6041:6041"
+      - "6060:6060"
+      - "6043-6049:6043-6049/tcp"
+      - "6043-6049:6043-6049/udp"
+    volumes:
+      - './taos_data/data:/var/lib/taos'
+      - './taos_data/log:/var/log/taos'
+    healthcheck:
+      test: ["CMD-SHELL", "taos -h localhost -s 'select 1;' || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    networks:
+      - easyaiot-network
+
+  # Redis Server
+  Redis:
+    image: redis:7.2.9
+    container_name: redis-server
+    restart: always
+    privileged: true
+    ports:
+      - "6379:6379"
+    environment:
+      - TZ=Asia/Shanghai
+    command: >
+      redis-server
+      --save 60 1000
+      --loglevel warning
+      --appendonly yes
+      --requirepass basiclab@iot975248395
+      --maxclients 10000
+      --timeout 300
+      --tcp-keepalive 60
+      --tcp-backlog 511
+      --maxmemory-policy allkeys-lru
+    volumes:
+      - './redis_data/data:/data'
+      - './redis_data/logs:/logs'
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a basiclab@iot975248395 ping | grep PONG || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20M"
+        max-file: "10"
+    networks:
+      - easyaiot-network
+
+  # kafka
+  Kafka:
+    image: apache/kafka:3.8.0
+    container_name: kafka-server
+    restart: always
+    ports:
+      - "9092:9092"
+      - "9093:9093"
+    environment:
+      - TZ=Asia/Shanghai
+      - KAFKA_NODE_ID=1
+      - KAFKA_PROCESS_ROLES=broker,controller
+      - KAFKA_LISTENERS=PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
+      - KAFKA_ADVERTISED_LISTENERS=PLAINTEXT://kafka-server:9092
+      - KAFKA_CONTROLLER_QUORUM_VOTERS=1@kafka-server:9093
+      - KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      - KAFKA_INTER_BROKER_LISTENER_NAME=PLAINTEXT
+      - KAFKA_CONTROLLER_LISTENER_NAMES=CONTROLLER
+      - KAFKA_AUTO_CREATE_TOPICS_ENABLE=true
+      - KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1
+      - KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS=0
+      - KAFKA_TRANSACTION_STATE_LOG_MIN_ISR=1
+      - KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR=1
+      - KAFKA_SHARE_COORDINATOR_STATE_TOPIC_REPLICATION_FACTOR=1
+      - KAFKA_SHARE_COORDINATOR_STATE_TOPIC_MIN_ISR=1
+      - CLUSTER_ID=4L6g3nShT-eMCtK--X86sw
+      - KAFKA_LOG_RETENTION_HOURS=168
+      - KAFKA_LOG_DIRS=/var/lib/kafka/data
+    volumes:
+      - ./mq_data/data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-broker-api-versions.sh --bootstrap-server localhost:9092 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    networks:
+      - easyaiot-network
+
+  # MinIO Server
+  MinIO:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    container_name: minio-server
+    restart: always
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      - TZ=Asia/Shanghai
+      - MINIO_ROOT_USER=minioadmin
+      - MINIO_ROOT_PASSWORD=basiclab@iot975248395
+    command: server /data --console-address ":9001"
+    volumes:
+      - './minio_data/data:/data'
+      - './minio_data/config:/root/.minio'
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    networks:
+      - easyaiot-network
+
+  # SRS Server
+  SRS:
+    image: ossrs/srs:5
+    container_name: srs-server
+    restart: always
+    ports:
+      - "1935:1935"
+      - "1985:1985"
+      - "8080:8080"
+      - "8000:8000/udp"
+    environment:
+      - TZ=Asia/Shanghai
+    volumes:
+      - './srs_data/conf:/usr/local/srs/conf'
+      - './srs_data/conf:/opt/srs/trunk/conf'
+      - './srs_data/data:/data'
+      - './srs_data/playbacks:/data/playbacks'
+    command: ["./objs/srs", "-c", "conf/docker.conf"]
+    working_dir: /usr/local/srs
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:1985/api/v1/versions || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    networks:
+      - easyaiot-network
+
+  # Node-RED Server
+  NodeRED:
+    image: nodered/node-red:latest
+    container_name: nodered-server
+    restart: always
+    ports:
+      - "1880:1880"
+    environment:
+      - TZ=Asia/Shanghai
+      - NODE_OPTIONS=--max-old-space-size=512
+    user: "1000:1000"
+    volumes:
+      - './nodered_data/data:/data'
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:1880/ || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    networks:
+      - easyaiot-network
+
+  # EMQX MQTT Broker
+  EMQX:
+    image: emqx/emqx:5.8.7
+    container_name: emqx-server
+    restart: always
+    ports:
+      - "1883:1883"      # MQTT
+      - "8883:8883"       # MQTT/SSL
+      - "8083:8083"       # WebSocket
+      - "8084:8084"       # WebSocket/SSL
+      - "18083:18083"     # Dashboard
+    environment:
+      - TZ=Asia/Shanghai
+      - EMQX_NAME=emqx
+      - EMQX_HOST=127.0.0.1
+      - EMQX_NODE__COOKIE=emqxsecretcookie
+      - EMQX_CLUSTER__DISCOVERY_STRATEGY=static
+      - EMQX_DASHBOARD__DEFAULT_USERNAME=admin
+      - EMQX_DASHBOARD__DEFAULT_PASSWORD=basiclab@iot6874125784
+      - EMQX_LOG__LEVEL=warning
+    volumes:
+      - emqx_data:/opt/emqx/data
+      - emqx_log:/opt/emqx/log
+    healthcheck:
+      test: ["CMD", "/opt/emqx/bin/emqx", "ctl", "status"]
+      interval: 5s
+      timeout: 25s
+      retries: 5
+    networks:
+      - easyaiot-network
+
+# 磁盘挂载
+volumes:
+  nacos_data:
+    driver: local
+  db_data:
+    driver: local
+  taos_data:
+    driver: local
+  redis_data:
+    driver: local
+  mq_data:
+    driver: local
+  minio_data:
+    driver: local
+  srs_data:
+    driver: local
+  nodered_data:
+    driver: local
+  emqx_data:
+    driver: local
+  emqx_log:
+    driver: local
+
+# 网络配置
+# 注意：当宿主机IP发生变化后，如果容器无法加入网络，请执行以下命令修复：
+# 1. docker network rm easyaiot-network
+# 2. docker network create easyaiot-network
+# 3. docker-compose restart
+networks:
+  easyaiot-network:
+    name: easyaiot-network
+    external: true

@@ -1,0 +1,340 @@
+package com.basiclab.iot.sink.protocol.mqtt.router;
+
+import cn.hutool.core.util.StrUtil;
+import cn.hutool.extra.spring.SpringUtil;
+import com.basiclab.iot.sink.auth.service.DeviceAuthService;
+import com.basiclab.iot.sink.biz.dto.IotDeviceAuthReqDTO;
+import com.basiclab.iot.sink.biz.dto.IotDeviceRespDTO;
+import com.basiclab.iot.sink.mq.message.IotDeviceMessage;
+import com.basiclab.iot.sink.util.IotDeviceAuthUtils;
+import com.basiclab.iot.sink.protocol.mqtt.IotMqttUpstreamProtocol;
+import com.basiclab.iot.sink.protocol.mqtt.manager.IotMqttConnectionManager;
+import com.basiclab.iot.sink.messagebus.publisher.IotDeviceService;
+import com.basiclab.iot.sink.messagebus.publisher.message.IotDeviceMessageService;
+import com.basiclab.iot.sink.messagebus.publisher.message.IotDeviceMessageServiceImpl;
+import com.basiclab.iot.sink.service.DeviceServerIdService;
+import io.netty.handler.codec.mqtt.MqttConnectReturnCode;
+import io.netty.handler.codec.mqtt.MqttQoS;
+import io.vertx.mqtt.MqttEndpoint;
+import io.vertx.mqtt.MqttTopicSubscription;
+import lombok.extern.slf4j.Slf4j;
+
+import java.util.List;
+
+/**
+ * IotMqttUpstreamHandler
+ *
+ * @author 翱翔的雄库鲁
+ * @email andywebjava@163.com
+ * @wechat EasyAIoT2025
+ */
+
+@Slf4j
+public class IotMqttUpstreamHandler {
+
+    private final IotDeviceMessageService deviceMessageService;
+
+    private final IotMqttConnectionManager connectionManager;
+
+    private final DeviceAuthService deviceAuthService;
+
+    private final IotDeviceService deviceService;
+
+    private final String serverId;
+
+    public IotMqttUpstreamHandler(IotMqttUpstreamProtocol protocol,
+                                  IotDeviceMessageService deviceMessageService,
+                                  IotMqttConnectionManager connectionManager) {
+        this.deviceMessageService = deviceMessageService;
+        this.deviceAuthService = SpringUtil.getBean(DeviceAuthService.class);
+        this.deviceService = SpringUtil.getBean(IotDeviceService.class);
+        this.connectionManager = connectionManager;
+        this.serverId = protocol.getServerId();
+    }
+
+    /**
+     * 处理 MQTT 连接
+     *
+     * @param endpoint MQTT 连接端点
+     */
+    public void handle(MqttEndpoint endpoint) {
+        String clientId = endpoint.clientIdentifier();
+        String username = endpoint.auth() != null ? endpoint.auth().getUsername() : null;
+        String password = endpoint.auth() != null ? endpoint.auth().getPassword() : null;
+
+        log.debug("[handle][设备连接请求，客户端 ID: {}，用户名: {}，地址: {}]",
+                clientId, username, connectionManager.getEndpointAddress(endpoint));
+
+        // 1. 先进行认证
+        if (!authenticateDevice(clientId, username, password, endpoint)) {
+            log.warn("[handle][设备认证失败，拒绝连接，客户端 ID: {}，用户名: {}]", clientId, username);
+            endpoint.reject(MqttConnectReturnCode.CONNECTION_REFUSED_BAD_USER_NAME_OR_PASSWORD);
+            return;
+        }
+
+        log.info("[handle][设备认证成功，建立连接，客户端 ID: {}，用户名: {}]", clientId, username);
+
+        // 2. 设置心跳处理器（监听客户端的 PINGREQ 消息）
+        endpoint.pingHandler(v -> {
+            log.debug("[handle][收到客户端心跳，客户端 ID: {}]", clientId);
+            // Vert.x 会自动发送 PINGRESP 响应，无需手动处理
+        });
+
+        // 3. 设置异常和关闭处理器
+        endpoint.exceptionHandler(ex -> {
+            log.warn("[handle][连接异常，客户端 ID: {}，地址: {}]", clientId, connectionManager.getEndpointAddress(endpoint));
+            cleanupConnection(endpoint);
+        });
+        endpoint.closeHandler(v -> {
+            cleanupConnection(endpoint);
+        });
+
+        // 4. 设置消息处理器
+        endpoint.publishHandler(message -> {
+            try {
+                processMessage(clientId, message.topicName(), message.payload().getBytes());
+
+                // 根据 QoS 级别发送相应的确认消息
+                if (message.qosLevel() == MqttQoS.AT_LEAST_ONCE) {
+                    // QoS 1: 发送 PUBACK 确认
+                    endpoint.publishAcknowledge(message.messageId());
+                } else if (message.qosLevel() == MqttQoS.EXACTLY_ONCE) {
+                    // QoS 2: 发送 PUBREC 确认
+                    endpoint.publishReceived(message.messageId());
+                }
+                // QoS 0 无需确认
+
+            } catch (Exception e) {
+                log.error("[handle][消息解码失败，断开连接，客户端 ID: {}，地址: {}，错误: {}]",
+                        clientId, connectionManager.getEndpointAddress(endpoint), e.getMessage());
+                cleanupConnection(endpoint);
+                endpoint.close();
+            }
+        });
+
+        // 5. 设置订阅处理器
+        endpoint.subscribeHandler(subscribe -> {
+            // 提取主题名称列表用于日志显示
+            List<String> topicNames = subscribe.topicSubscriptions().stream()
+                    .map(MqttTopicSubscription::topicName)
+                    .collect(java.util.stream.Collectors.toList());
+            log.debug("[handle][设备订阅，客户端 ID: {}，主题: {}]", clientId, topicNames);
+
+            // 提取 QoS 列表
+            List<MqttQoS> grantedQoSLevels = subscribe.topicSubscriptions().stream()
+                    .map(MqttTopicSubscription::qualityOfService)
+                    .collect(java.util.stream.Collectors.toList());
+            endpoint.subscribeAcknowledge(subscribe.messageId(), grantedQoSLevels);
+        });
+
+        // 6. 设置取消订阅处理器
+        endpoint.unsubscribeHandler(unsubscribe -> {
+            log.debug("[handle][设备取消订阅，客户端 ID: {}，主题: {}]", clientId, unsubscribe.topics());
+            endpoint.unsubscribeAcknowledge(unsubscribe.messageId());
+        });
+
+        // 7. 设置 QoS 2消息的 PUBREL 处理器
+        endpoint.publishReleaseHandler(endpoint::publishComplete);
+
+        // 8. 设置断开连接处理器
+        endpoint.disconnectHandler(v -> {
+            log.debug("[handle][设备断开连接，客户端 ID: {}]", clientId);
+            cleanupConnection(endpoint);
+        });
+
+        // 9. 接受连接
+        endpoint.accept(false);
+    }
+
+    /**
+     * 处理消息
+     *
+     * @param clientId 客户端 ID
+     * @param topic    主题
+     * @param payload  消息内容
+     */
+    private void processMessage(String clientId, String topic, byte[] payload) {
+        // 1. 基础检查
+        if (payload == null || payload.length == 0) {
+            return;
+        }
+
+        // 2. 解析主题，获取 productIdentification 和 deviceIdentification
+        String[] topicParts = topic.split("/");
+        if (topicParts.length < 4 || StrUtil.hasBlank(topicParts[2], topicParts[3])) {
+            log.warn("[processMessage][topic({}) 格式不正确，无法解析有效的 productIdentification 和 deviceIdentification]", topic);
+            return;
+        }
+
+        String productIdentification = topicParts[2];
+        String deviceIdentification = topicParts[3];
+
+        // 3. 解码消息（优先使用 topic 匹配）
+        try {
+            IotDeviceMessage message;
+            // 优先使用 topic 匹配编解码器
+            if (deviceMessageService instanceof IotDeviceMessageServiceImpl) {
+                IotDeviceMessageServiceImpl serviceImpl = (IotDeviceMessageServiceImpl) deviceMessageService;
+                message = serviceImpl.decodeDeviceMessageByTopic(payload, topic);
+            } else {
+                // 向后兼容：使用原有的方式
+                message = deviceMessageService.decodeDeviceMessage(payload, productIdentification, deviceIdentification);
+            }
+            
+            if (message == null) {
+                log.warn("[processMessage][消息解码失败，客户端 ID: {}，主题: {}]", clientId, topic);
+                return;
+            }
+
+            log.info("[processMessage][收到设备消息，设备: {}.{}, 主题: {}, 方法: {}, 需要回复: {}]",
+                    productIdentification, deviceIdentification, topic, message.getMethod(), message.getNeedReply());
+
+            // 4. 处理业务消息（认证已在连接时完成）
+            handleBusinessRequest(message, productIdentification, deviceIdentification, topic);
+        } catch (Exception e) {
+            log.error("[processMessage][消息处理异常，客户端 ID: {}，主题: {}，错误: {}]",
+                    clientId, topic, e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 在 MQTT 连接时进行设备认证
+     *
+     * @param clientId 客户端 ID
+     * @param username 用户名
+     * @param password 密码
+     * @param endpoint MQTT 连接端点
+     * @return 认证是否成功
+     */
+    private boolean authenticateDevice(String clientId, String username, String password, MqttEndpoint endpoint) {
+        try {
+            // 1. 参数校验
+            if (StrUtil.hasEmpty(clientId, username, password)) {
+                log.warn("[authenticateDevice][认证参数不完整，客户端 ID: {}，用户名: {}]", clientId, username);
+                return false;
+            }
+
+            // 2. 构建认证参数
+            IotDeviceAuthReqDTO authParams = new IotDeviceAuthReqDTO()
+                    .setClientId(clientId)
+                    .setUsername(username)
+                    .setPassword(password);
+
+            // 3. 调用设备认证 Service
+            boolean authResult = deviceAuthService.authDevice(authParams);
+            if (!authResult) {
+                log.warn("[authenticateDevice][设备认证失败，客户端 ID: {}，用户名: {}]",
+                        clientId, username);
+                return false;
+            }
+
+            // 4. 获取设备信息
+            IotDeviceAuthUtils.DeviceInfo deviceInfo = IotDeviceAuthUtils.parseUsername(username);
+            if (deviceInfo == null) {
+                log.warn("[authenticateDevice][用户名格式不正确，客户端 ID: {}，用户名: {}]", clientId, username);
+                return false;
+            }
+
+            IotDeviceRespDTO device = deviceService.getDeviceFromCache(
+                    deviceInfo.getProductIdentification(),
+                    deviceInfo.getDeviceIdentification());
+            if (device == null) {
+                log.warn("[authenticateDevice][获取设备信息失败，客户端 ID: {}，用户名: {}]",
+                        clientId, username);
+                return false;
+            }
+
+            // 5. 注册连接
+            registerConnection(endpoint, device, clientId);
+
+            // 6. 发送设备上线消息
+            sendOnlineMessage(device);
+
+            return true;
+        } catch (Exception e) {
+            log.error("[authenticateDevice][设备认证异常，客户端 ID: {}，用户名: {}]", clientId, username, e);
+            return false;
+        }
+    }
+
+    /**
+     * 处理业务请求
+     */
+    private void handleBusinessRequest(IotDeviceMessage message, String productIdentification, String deviceIdentification, String topic) {
+        // 设置 topic
+        if (message.getTopic() == null) {
+            message.setTopic(topic);
+        }
+        
+        // 发送消息到消息总线
+        message.setServerId(serverId);
+        deviceMessageService.sendDeviceMessage(message, productIdentification, deviceIdentification, serverId);
+    }
+
+    /**
+     * 注册连接
+     */
+    private void registerConnection(MqttEndpoint endpoint, IotDeviceRespDTO device,
+                                    String clientId) {
+
+        IotMqttConnectionManager.ConnectionInfo connectionInfo = new IotMqttConnectionManager.ConnectionInfo()
+                .setDeviceId(device.getId())
+                .setProductIdentification(device.getProductIdentification())
+                .setDeviceIdentification(device.getDeviceIdentification())
+                .setClientId(clientId)
+                .setAuthenticated(true)
+                .setRemoteAddress(connectionManager.getEndpointAddress(endpoint));
+
+        connectionManager.registerConnection(endpoint, device.getId(), connectionInfo);
+        
+        // 存储设备与 serverId 的映射到 Redis
+        DeviceServerIdService deviceServerIdService = SpringUtil.getBean(DeviceServerIdService.class);
+        if (deviceServerIdService != null) {
+            deviceServerIdService.saveDeviceServerId(device.getId(), serverId);
+        }
+    }
+
+    /**
+     * 发送设备上线消息
+     */
+    private void sendOnlineMessage(IotDeviceRespDTO device) {
+        try {
+            IotDeviceMessage onlineMessage = IotDeviceMessage.buildStateUpdateOnline();
+            deviceMessageService.sendDeviceMessage(onlineMessage, device.getProductIdentification(),
+                    device.getDeviceIdentification(), serverId);
+            log.info("[sendOnlineMessage][设备上线，设备 ID: {}，设备唯一标识: {}]", device.getId(), device.getDeviceIdentification());
+        } catch (Exception e) {
+            log.error("[sendOnlineMessage][发送设备上线消息失败，设备 ID: {}，错误: {}]", device.getId(), e.getMessage());
+        }
+    }
+
+    /**
+     * 清理连接
+     */
+    private void cleanupConnection(MqttEndpoint endpoint) {
+        try {
+            IotMqttConnectionManager.ConnectionInfo connectionInfo = connectionManager.getConnectionInfo(endpoint);
+            if (connectionInfo != null) {
+                // 发送设备离线消息
+                IotDeviceMessage offlineMessage = IotDeviceMessage.buildStateOffline();
+                deviceMessageService.sendDeviceMessage(offlineMessage, connectionInfo.getProductIdentification(),
+                        connectionInfo.getDeviceIdentification(), serverId);
+                log.info("[cleanupConnection][设备离线，设备 ID: {}，设备唯一标识: {}]",
+                        connectionInfo.getDeviceId(), connectionInfo.getDeviceIdentification());
+                
+                // 删除设备与 serverId 的映射
+                DeviceServerIdService deviceServerIdService = SpringUtil.getBean(DeviceServerIdService.class);
+                if (deviceServerIdService != null) {
+                    deviceServerIdService.removeDeviceServerId(connectionInfo.getDeviceId());
+                }
+            }
+
+            // 注销连接
+            connectionManager.unregisterConnection(endpoint);
+        } catch (Exception e) {
+            log.error("[cleanupConnection][清理连接失败，客户端 ID: {}，错误: {}]",
+                    endpoint.clientIdentifier(), e.getMessage());
+        }
+    }
+
+}
