@@ -3836,6 +3836,7 @@ init_databases() {
     DB_SQL_MAP["iot-video20"]="${sql_dir}/iot-video10.sql"
     DB_SQL_MAP["ruoyi-vue-pro20"]="${sql_dir}/ruoyi-vue-pro10.sql"
     DB_SQL_MAP["iot-message20"]="${sql_dir}/iot-message10.sql"
+    DB_SQL_MAP["iot-gb2818120"]="${sql_dir}/iot-gb2818110.sql"
     
     local success_count=0
     local total_count=${#DB_SQL_MAP[@]}
