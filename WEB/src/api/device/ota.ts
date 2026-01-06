@@ -55,3 +55,15 @@ export const batchPushUpgradePackage = (params) => {
 export const deleteOtaVerification = (ids) => {
   return commonApi('post', Api.Versions + '/verification/delete', {params: {ids}});
 };
+
+export const fetchWhiteList = (params) => {
+  return commonApi('get', Api.Versions + '/white-list', {params});
+};
+
+export const fetchWhiteGroupList = (params) => {
+  return commonApi('get', Api.Versions + '/white-group-list', {params});
+};
+
+export const batchAddDeviceTestList = (params) => {
+  return commonApi('post', Api.Versions + '/batch-add-device-test-list', {params});
+};
