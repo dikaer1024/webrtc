@@ -19,10 +19,16 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
+import javax.net.ssl.HttpsURLConnection;
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.TrustManager;
+import javax.net.ssl.X509TrustManager;
 import java.io.*;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.net.URLConnection;
+import java.security.SecureRandom;
+import java.security.cert.X509Certificate;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -62,20 +68,54 @@ public class MailMsgSender {
         try {
             TMsgMail mailMsg = mailMsgMaker.makeMsg(msgId,content);
             sendResult.setMsgName(mailMsg.getMsgName());
-//            String previewUser = mailMsg.getPreviewUser();
+            String previewUser = mailMsg.getPreviewUser();
             String files = mailMsg.getFiles();
             List<File> mailFiles = new ArrayList<>();
             getMailFiles(files, mailFiles);
             List<String> tos = Lists.newArrayList();
-//            tos.add(previewUser);
-            // 获取用户组中的目标用户
-            String userGroupId = mailMsg.getUserGroupId();
-            if(StringUtils.isNotEmpty(userGroupId)){
-               String previewUserId = tPreviewUserGroupMapper.queryPreviewUserIds(userGroupId);
-               List<String> previewUserIds = Arrays.asList(previewUserId.split(","));
-               List<String> previewUsers = tPreviewUserMapper.queryPreviewUsers(previewUserIds);
-               tos.addAll(previewUsers);
+            
+            // 优先使用直接指定的收件人（previewUser）
+            if (StringUtils.isNotEmpty(previewUser)) {
+                // 支持多个收件人，用逗号分隔
+                String[] recipients = previewUser.split(",");
+                for (String recipient : recipients) {
+                    String trimmedRecipient = recipient.trim();
+                    if (StringUtils.isNotEmpty(trimmedRecipient)) {
+                        tos.add(trimmedRecipient);
+                    }
+                }
+                log.info("从previewUser获取收件人: {}", tos);
             }
+            
+            // 如果previewUser为空，则从用户组中获取目标用户
+            String userGroupId = mailMsg.getUserGroupId();
+            log.info("邮件模板 userGroupId: {}", userGroupId);
+            if (CollectionUtils.isEmpty(tos) && StringUtils.isNotEmpty(userGroupId)) {
+               String previewUserId = tPreviewUserGroupMapper.queryPreviewUserIds(userGroupId);
+               log.info("查询到的 previewUserId: {}", previewUserId);
+               if(StringUtils.isNotEmpty(previewUserId)){
+                   List<String> previewUserIds = Arrays.asList(previewUserId.split(","));
+                   List<String> previewUsers = tPreviewUserMapper.queryPreviewUsers(previewUserIds);
+                   log.info("查询到的收件人列表: {}", previewUsers);
+                   tos.addAll(previewUsers);
+               } else {
+                   log.warn("用户组 {} 中没有配置用户ID", userGroupId);
+               }
+            } else if (CollectionUtils.isEmpty(tos)) {
+                log.warn("邮件模板中没有配置 userGroupId 且 previewUser 为空");
+            }
+            
+            // 验证收件人列表是否为空
+            if (CollectionUtils.isEmpty(tos)) {
+                String errorMsg = "收件人列表为空，无法发送邮件。请检查邮件模板是否配置了收件人(previewUser)或用户组(userGroupId)，以及用户组中是否包含有效的邮箱地址";
+                log.error(errorMsg);
+                sendResult.setSuccess(false);
+                sendResult.setInfo(errorMsg);
+                return sendResult;
+            }
+            
+            log.info("邮件收件人列表: {}, 抄送列表: {}", tos, mailMsg.getCc());
+            
             List<String> ccList = null;
             String cc = mailMsg.getCc();
             if (StringUtils.isNotBlank(cc)) {
@@ -83,54 +123,137 @@ public class MailMsgSender {
                 ccList = new ArrayList<>(ccs);
             }
             MailAccount mailAccount = getMailAccount();
+            log.info("开始发送邮件，标题: {}, 收件人数量: {}", mailMsg.getTitle(), tos.size());
             if (CollectionUtils.isEmpty(mailFiles)) {
                 MailUtil.send(mailAccount, tos, ccList, null, mailMsg.getTitle(), mailMsg.getContent(), true);
             } else {
                 MailUtil.send(mailAccount, tos, ccList, null, mailMsg.getTitle(), mailMsg.getContent(), true, mailFiles.toArray(new File[0]));
             }
+            log.info("邮件发送成功，收件人: {}", tos);
             sendResult.setSuccess(true);
 
         } catch (Exception e) {
             sendResult.setSuccess(false);
             sendResult.setInfo(e.getMessage());
+            log.error("邮件发送失败，错误信息: {}", e.getMessage(), e);
             log.error(ExceptionUtils.getStackTrace(e));
         }
 
         return sendResult;
     }
 
-    private void getMailFiles(String files, List<File> mailFiles) throws IOException {
+    private void getMailFiles(String files, List<File> mailFiles) throws Exception {
         if(StringUtils.isNotEmpty(files)) {
             JSONObject jsonObject = JSONObject.parseObject(files);
-            URL url = new URL(jsonObject.getString("filePath"));
-            if(url != null) {
+            String filePath = jsonObject.getString("filePath");
+            String fileName = jsonObject.getString("fileName");
+            
+            if(StringUtils.isBlank(filePath)) {
+                log.warn("文件路径为空，跳过文件下载");
+                return;
+            }
+            
+            log.info("开始下载邮件附件，文件路径: {}, 文件名: {}", filePath, fileName);
+            URL url = new URL(filePath);
+            HttpURLConnection httpURLConnection = null;
+            BufferedInputStream bin = null;
+            FileOutputStream out = null;
+            
+            try {
+                // 如果是 HTTPS，自动信任所有证书
+                if ("https".equalsIgnoreCase(url.getProtocol())) {
+                    trustAllHttpsCertificates();
+                }
                 URLConnection urlConnection = url.openConnection();
-                HttpURLConnection httpURLConnection = (HttpURLConnection) urlConnection;// http的连接类
-                httpURLConnection.setConnectTimeout(1000 * 5);//设置超时
-                httpURLConnection.setRequestMethod("GET");//设置请求方式，默认是GET
-                httpURLConnection.setRequestProperty("Charset", "UTF-8");// 设置字符编码
-                httpURLConnection.connect();// 打开连接
-                BufferedInputStream bin = new BufferedInputStream(httpURLConnection.getInputStream());
-                String path = mailAnnexDir + File.separatorChar + jsonObject.getString("fileName");// 指定存放位置
-                log.info("存储位置目录：   {}", path);
+                httpURLConnection = (HttpURLConnection) urlConnection;
+                // 设置连接超时为30秒
+                httpURLConnection.setConnectTimeout(1000 * 30);
+                // 设置读取超时为60秒
+                httpURLConnection.setReadTimeout(1000 * 60);
+                httpURLConnection.setRequestMethod("GET");
+                httpURLConnection.setRequestProperty("Charset", "UTF-8");
+                // 设置用户代理，避免某些服务器拒绝请求
+                httpURLConnection.setRequestProperty("User-Agent", "Mozilla/5.0");
+                
+                log.debug("尝试连接文件服务器: {}", filePath);
+                httpURLConnection.connect();
+                
+                int responseCode = httpURLConnection.getResponseCode();
+                if (responseCode != HttpURLConnection.HTTP_OK) {
+                    throw new IOException("文件下载失败，HTTP响应码: " + responseCode);
+                }
+                
+                String path = mailAnnexDir + File.separatorChar + fileName;
+                log.info("存储位置目录：{}", path);
                 File file = new File(path);
-                mailFiles.add(file);
+                
                 // 校验文件夹目录是否存在，不存在就创建一个目录
                 if (!file.getParentFile().exists()) {
                     file.getParentFile().mkdirs();
                 }
-                OutputStream out = new FileOutputStream(file);
+                
+                bin = new BufferedInputStream(httpURLConnection.getInputStream());
+                out = new FileOutputStream(file);
+                
                 int size = 0;
                 byte[] b = new byte[20480];
+                long totalBytes = 0;
                 //把输入流的文件读取到字节数据b中，然后输出到指定目录的文件
                 while ((size = bin.read(b)) != -1) {
                     out.write(b, 0, size);
+                    totalBytes += size;
                 }
-                // 关闭资源
-                bin.close();
-                out.close();
+                out.flush();
+                
+                log.info("文件下载成功，文件名: {}, 大小: {} bytes", fileName, totalBytes);
+                mailFiles.add(file);
+                
+            } catch (IOException e) {
+                log.error("下载邮件附件失败，文件路径: {}, 错误信息: {}", filePath, e.getMessage(), e);
+                throw e;
+            } catch (Exception ex) {
+                log.error("下载邮件附件失败，文件路径: {}, 错误信息: {}", filePath, ex.getMessage(), ex);
+                throw ex;
+            } finally {
+                // 确保资源被正确关闭
+                if (bin != null) {
+                    try {
+                        bin.close();
+                    } catch (IOException e) {
+                        log.warn("关闭输入流失败: {}", e.getMessage());
+                    }
+                }
+                if (out != null) {
+                    try {
+                        out.close();
+                    } catch (IOException e) {
+                        log.warn("关闭输出流失败: {}", e.getMessage());
+                    }
+                }
+                if (httpURLConnection != null) {
+                    httpURLConnection.disconnect();
+                }
             }
         }
+    }
+
+    /**
+     * 统一支持 HTTP / HTTPS
+     * @throws Exception
+     */
+    private void trustAllHttpsCertificates() throws Exception {
+        TrustManager[] trustAllCerts = new TrustManager[]{
+                new X509TrustManager() {
+                    public X509Certificate[] getAcceptedIssuers() { return null; }
+                    public void checkClientTrusted(X509Certificate[] certs, String authType) {}
+                    public void checkServerTrusted(X509Certificate[] certs, String authType) {}
+                }
+        };
+
+        SSLContext sc = SSLContext.getInstance("TLS");
+        sc.init(null, trustAllCerts, new SecureRandom());
+        HttpsURLConnection.setDefaultSSLSocketFactory(sc.getSocketFactory());
+        HttpsURLConnection.setDefaultHostnameVerifier((hostname, session) -> true);
     }
 
 
