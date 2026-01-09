@@ -118,7 +118,17 @@ class AlgorithmTaskDaemon:
                     self._log(f'执行命令: {" ".join(cmds)}', 'DEBUG')
                     self._log(f'工作目录: {cwd}', 'DEBUG')
                     self._log(f'任务ID: {env.get("TASK_ID", "N/A")}', 'INFO')
-                    
+
+                    # 如果在windows平台出现跨平台就会报错
+                    creationflags = 0
+                    preexec_fn = None
+                    if os.name == 'posix':
+                        # Linux / macOS
+                        preexec_fn = os.setsid
+                    else:
+                        # Windows
+                        creationflags = sp.CREATE_NEW_PROCESS_GROUP
+
                     # 使用进程组启动，以便能够一次性终止整个进程树
                     self._process = sp.Popen(
                         cmds,
@@ -127,8 +137,11 @@ class AlgorithmTaskDaemon:
                         cwd=cwd,
                         env=env,
                         text=True,
+                        encoding='utf-8',  # 关键
+                        errors='replace',  # 防止极端情况直接崩
                         bufsize=1,
-                        preexec_fn=os.setsid  # 创建新的进程组
+                        preexec_fn=preexec_fn,  # 创建新的进程组
+                        creationflags=creationflags
                     )
                     
                     self._log(f'进程已启动，PID: {self._process.pid}', 'INFO')
