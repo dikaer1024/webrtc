@@ -108,7 +108,7 @@ import {BasicForm, useForm} from '@/components/Form';
 import {propTypes} from '@/utils/propTypes';
 import {isFunction} from '@/utils/is';
 import {useMessage} from "@/hooks/web/useMessage";
-import PROXY from "@/assets/images/video/proxy.png";
+import PROXY from "@/assets/images/video/ai-task.png";
 import {useRouter} from "vue-router";
 
 const router = useRouter();
