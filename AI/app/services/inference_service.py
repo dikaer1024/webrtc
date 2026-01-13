@@ -6,6 +6,7 @@
 import logging
 import multiprocessing
 import os
+import platform
 import shutil
 import subprocess
 import tempfile
@@ -891,19 +892,40 @@ class InferenceService:
                 # 使用FFmpeg将视频转换为H.264编码，确保浏览器兼容性
                 # H.264编码的MP4文件可以在所有现代浏览器中播放
                 logging.info(f"开始使用FFmpeg转换视频为H.264编码: {temp_output_path} -> {output_path}")
-                ffmpeg_cmd = [
-                    'ffmpeg',
-                    '-y',  # 覆盖输出文件
-                    '-i', temp_output_path,  # 输入文件
-                    '-c:v', 'libx264',  # 使用H.264视频编码
-                    '-preset', 'medium',  # 编码速度和质量平衡
-                    '-crf', '23',  # 质量控制（18-28，23是默认值）
-                    '-pix_fmt', 'yuv420p',  # 像素格式，确保浏览器兼容
-                    '-movflags', '+faststart',  # 优化网络播放（将moov atom移到文件开头）
-                    '-c:a', 'aac',  # 音频编码（如果有音频轨道）
-                    '-b:a', '128k',  # 音频比特率
-                    output_path  # 输出文件
-                ]
+                
+                # 检查操作系统平台，选择合适的编码器
+                if platform.system() == "Darwin":  # macOS
+                    # 在macOS上使用VideoToolbox编码器
+                    ffmpeg_cmd = [
+                        'ffmpeg',
+                        '-y',  # 覆盖输出文件
+                        '-i', temp_output_path,  # 输入文件
+                        '-c:v', 'h264_videotoolbox',  # 使用VideoToolbox H.264视频编码
+                        '-profile:v', 'main',  # 使用main profile以确保兼容性
+                        '-level', '4.0',  # 使用level 4.0以确保兼容性
+                        '-pix_fmt', 'yuv420p',  # 像素格式，确保浏览器兼容
+                        '-movflags', '+faststart',  # 优化网络播放（将moov atom移到文件开头）
+                        '-c:a', 'aac',  # 音频编码（如果有音频轨道）
+                        '-b:a', '128k',  # 音频比特率
+                        output_path  # 输出文件
+                    ]
+                else:
+                    # 在其他平台上使用libx264编码器
+                    ffmpeg_cmd = [
+                        'ffmpeg',
+                        '-y',  # 覆盖输出文件
+                        '-i', temp_output_path,  # 输入文件
+                        '-c:v', 'libx264',  # 使用H.264视频编码
+                        '-preset', 'medium',  # 编码速度和质量平衡
+                        # '-crf', '23',  # 质量控制（18-28，23是默认值）
+                        '-pix_fmt', 'yuv420p',  # 像素格式，确保浏览器兼容
+                        '-movflags', '+faststart',  # 优化网络播放（将moov atom移到文件开头）
+                        '-c:a', 'aac',  # 音频编码（如果有音频轨道）
+                        '-b:a', '128k',  # 音频比特率
+                        output_path  # 输出文件
+                    ]
+                
+                logging.warning(f"执行FFmpeg命令: {' '.join(ffmpeg_cmd)}")
                 
                 try:
                     result = subprocess.run(
@@ -1073,22 +1095,43 @@ class InferenceService:
             if fps <= 0:
                 fps = 25
 
-            # FFmpeg推流命令
-            command = [
-                'ffmpeg',
-                '-y',
-                '-f', 'rawvideo',
-                '-vcodec', 'rawvideo',
-                '-pix_fmt', 'bgr24',
-                '-s', f'{width}x{height}',
-                '-r', str(fps),
-                '-i', '-',
-                '-c:v', 'libx264',
-                '-preset', 'ultrafast',
-                '-tune', 'zerolatency',
-                '-f', 'flv',
-                output_url
-            ]
+            # FFmpeg推流命令 - 根据平台选择编码器
+            if platform.system() == "Darwin":  # macOS
+                # 在macOS上使用VideoToolbox编码器
+                command = [
+                    'ffmpeg',
+                    '-y',
+                    '-f', 'rawvideo',
+                    '-vcodec', 'rawvideo',
+                    '-pix_fmt', 'bgr24',
+                    '-s', f'{width}x{height}',
+                    '-r', str(fps),
+                    '-i', '-',
+                    '-c:v', 'h264_videotoolbox',
+                    '-profile:v', 'main',
+                    '-level', '4.0',
+                    '-preset', 'ultrafast',
+                    '-tune', 'zerolatency',
+                    '-f', 'flv',
+                    output_url
+                ]
+            else:
+                # 在其他平台上使用libx264编码器
+                command = [
+                    'ffmpeg',
+                    '-y',
+                    '-f', 'rawvideo',
+                    '-vcodec', 'rawvideo',
+                    '-pix_fmt', 'bgr24',
+                    '-s', f'{width}x{height}',
+                    '-r', str(fps),
+                    '-i', '-',
+                    '-c:v', 'libx264',
+                    '-preset', 'ultrafast',
+                    '-tune', 'zerolatency',
+                    '-f', 'flv',
+                    output_url
+                ]
 
             ffmpeg_process = subprocess.Popen(command, stdin=subprocess.PIPE)
 
