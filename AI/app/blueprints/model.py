@@ -830,3 +830,27 @@ def download_model(model_id):
             'code': 500,
             'msg': f'服务器内部错误: {str(e)}'
         }), 500
+
+# 根据模型id 获取模型信息
+@model_bp.route('/<int:model_id>', methods=['GET'])
+def get_model(model_id):
+    try:
+        model = Model.query.get_or_404(model_id)
+        model_name = model.name
+        return jsonify({
+            'code': 0,
+            'msg': '获取模型成功:'+model_name,
+            'data': {
+                'name': model_name,
+                'version': model.version,
+                'model_path': model.model_path,
+                'onnx_model_path': model.onnx_model_path
+            },
+            'has_update': False
+        })
+    except Exception as e:
+        logger.error(f"获取模型失败: {str(e)}", exc_info=True)
+        return jsonify({
+            'code': 500,
+            'msg': f'服务器内部错误: {str(e)}'
+        }), 500
