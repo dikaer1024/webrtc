@@ -1,10 +1,11 @@
-package com.basiclab.iot.sink.auth.service;
+package com.basiclab.iot.sink.auth.service.impl;
 
 import cn.hutool.core.lang.Assert;
 import cn.hutool.json.JSONObject;
 import cn.hutool.jwt.JWT;
 import cn.hutool.jwt.JWTUtil;
 import com.basiclab.iot.common.utils.date.LocalDateTimeUtils;
+import com.basiclab.iot.sink.auth.service.DeviceAuthService;
 import com.basiclab.iot.sink.biz.dto.IotDeviceAuthReqDTO;
 import com.basiclab.iot.sink.config.IotGatewayProperties;
 import com.basiclab.iot.sink.dal.dataobject.DeviceDO;
