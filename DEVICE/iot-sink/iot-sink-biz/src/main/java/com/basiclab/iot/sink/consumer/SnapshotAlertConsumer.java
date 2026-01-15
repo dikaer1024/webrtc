@@ -187,7 +187,8 @@ public class SnapshotAlertConsumer {
      */
     @KafkaListener(
             topics = "${spring.kafka.snapshot-alert.topic:iot-snapshot-alert}",
-            groupId = "${spring.kafka.snapshot-alert.group-id:iot-sink-snapshot-alert-consumer}"
+            groupId = "${spring.kafka.snapshot-alert.group-id:iot-sink-snapshot-alert-consumer}",
+            containerFactory = "iotKafkaListenerContainerFactory"
     )
     public void consumeSnapshotAlert(
             @Payload String messageJson,

@@ -49,7 +49,8 @@ public class AlertNotificationConsumer {
      */
     @KafkaListener(
             topics = "${spring.kafka.alert-notification.topic:iot-alert-notification}",
-            groupId = "${spring.kafka.alert-notification.group-id:iot-sink-alert-consumer}"
+            groupId = "${spring.kafka.alert-notification.group-id:iot-sink-alert-consumer}",
+            containerFactory = "iotKafkaListenerContainerFactory"
     )
     public void consumeAlertNotification(
             @Payload String messageJson,

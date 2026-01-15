@@ -8,9 +8,8 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.kafka.core.DefaultKafkaProducerFactory;
-import org.springframework.kafka.core.KafkaTemplate;
-import org.springframework.kafka.core.ProducerFactory;
+import org.springframework.kafka.config.ConcurrentKafkaListenerContainerFactory;
+import org.springframework.kafka.core.*;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -112,4 +111,24 @@ public class KafkaConfig {
         return consumerBootstrapServers;
     }
 
+    /**
+     * 创建消费者配置消费者，都用我这套配置
+     * @return
+     */
+    @Bean
+    public ConsumerFactory<String, String> iotConsumerFactory() {
+        return new DefaultKafkaConsumerFactory<>(consumerConfigs());
+    }
+
+    /**
+     * 消费者监听容器工厂
+     * @return
+     */
+    @Bean(name = "iotKafkaListenerContainerFactory")
+    public ConcurrentKafkaListenerContainerFactory<String, String> iotKafkaListenerContainerFactory() {
+        ConcurrentKafkaListenerContainerFactory<String, String> factory =
+                new ConcurrentKafkaListenerContainerFactory<>();
+        factory.setConsumerFactory(iotConsumerFactory());
+        return factory;
+    }
 }
